@@ -497,20 +497,21 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     .no-print{display:none!important;}
   }
   .sheet-a4{width:210mm;padding:8mm 15mm;display:grid;grid-template-columns:repeat(3,60mm);column-gap:0mm;row-gap:2mm;}
-  .plabel{width:60mm;height:40mm;border:0.3mm dashed #999;border-radius:1.5mm;display:flex;padding:3.5mm 3.5mm 3mm 3.5mm;gap:2.5mm;background:#fff;}
-  .plabel .pcol{flex:1;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;min-width:0;}
-  .plabel .pclient{display:flex;align-items:center;gap:1.3mm;font-family:'IBM Plex Sans',sans-serif;font-weight:700;font-size:8pt;color:#111;white-space:nowrap;overflow:hidden;}
-  .plabel .pclient-logo{height:5.2mm;width:auto;max-width:11mm;object-fit:contain;flex:0 0 auto;}
-  .plabel .pclient-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
-  .plabel .pid{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:12.5pt;color:#000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .plabel{width:60mm;height:40mm;border:0.3mm dashed #999;border-radius:1.5mm;padding:3.2mm;background:#fff;overflow:hidden;}
+  .plabel .pinner{display:flex;flex-direction:column;height:100%;min-height:0;}
+  .plabel .ptop{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:7.8pt;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.1pt;}
+  .plabel .pmid{flex:1;display:flex;align-items:center;gap:2.2mm;min-height:0;margin-top:1.2mm;}
+  .plabel .pmid-left{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:0.7mm;}
+  .plabel .pmid-logo{height:5mm;width:auto;max-width:20mm;object-fit:contain;object-position:left;margin-bottom:0.8mm;}
+  .plabel .pid{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:13pt;color:#000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .plabel .peq{font-family:'IBM Plex Sans',sans-serif;font-size:6.6pt;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .plabel .pcompany{display:flex;align-items:center;gap:1.3mm;border-top:0.2mm solid #e5e5e5;padding-top:1.3mm;}
-  .plabel .pco-logo{height:4.2mm;width:auto;max-width:9mm;object-fit:contain;flex:0 0 auto;}
-  .plabel .pco-text{overflow:hidden;min-width:0;}
-  .plabel .pco-name{font-family:'IBM Plex Mono',monospace;font-size:5.4pt;text-transform:uppercase;letter-spacing:.2pt;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .plabel .pco-phone{font-family:'IBM Plex Mono',monospace;font-size:5pt;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .plabel .pqr{width:20mm;height:20mm;flex:0 0 auto;align-self:center;}
+  .plabel .pqr{width:19mm;height:19mm;flex:0 0 auto;}
   .plabel .pqr canvas,.plabel .pqr img{width:100%!important;height:100%!important;}
+  .plabel .pfoot{display:flex;align-items:center;gap:1.3mm;border-top:0.2mm solid #e5e5e5;padding-top:1mm;margin-top:1.2mm;}
+  .plabel .pfoot-logo{height:4mm;width:auto;max-width:8mm;object-fit:contain;flex:0 0 auto;}
+  .plabel .pfoot-text{overflow:hidden;min-width:0;}
+  .plabel .pfoot-name{font-family:'IBM Plex Mono',monospace;font-size:5.2pt;text-transform:uppercase;letter-spacing:.2pt;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .plabel .pfoot-phone{font-family:'IBM Plex Mono',monospace;font-size:4.8pt;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .hidden-render{position:fixed;left:-9999px;top:-9999px;}
 </style>
 </head>
@@ -11505,60 +11506,63 @@ function generateLabelsPDF(){
     doc.setDrawColor(170);
     doc.rect(xx+0.5, yy+0.5, lw-1, lh-1);
 
-    const qrSize = 20;
-    const padX = xx+3.5, padTop = yy+5;
-    const qrX = xx+lw-3.5-qrSize;
-    const textW = qrX - 2.5 - padX;
+    const padX = xx+3.2, padTop = yy+3.5, padRight = xx+lw-3.2;
+    const contentW = padRight - padX;
+    const qrSize = 19;
+    const qrX = padRight - qrSize;
 
-    /* ---- Cliente (arriba, destacado) ---- */
-    let cx = padX;
-    if(cl && cl.logo){
-      const ch=5.2, ratio=cl.logoRatio||1, cw=Math.min(ch*ratio, textW*0.4);
-      doc.addImage(cl.logo,'PNG', padX, padTop-4.2, cw, ch);
-      cx = padX+cw+1.5;
-    }
+    /* ---- Franja 1: nombre del cliente (ancho completo, arriba) ---- */
     doc.setFont('helvetica','bold'); doc.setTextColor(15);
-    const clientFit = fitSingleLine(doc, cl?cl.name:'—', textW-(cx-padX), 8.5, 6);
+    const clientFit = fitSingleLine(doc, cl?cl.name:'—', contentW, 9, 6);
     doc.setFontSize(clientFit.size);
-    doc.text(clientFit.text, cx, padTop);
+    doc.text(clientFit.text, padX, padTop);
 
-    /* ---- ID del equipo (autoajustable, nunca se corta) ---- */
+    /* ---- Franja 2: columna izquierda (logo cliente + ID + tipo) | QR a la derecha ---- */
+    const y2 = padTop + 2.5;
+    const leftW = qrX - 2.2 - padX;
+    let idBaseline = y2 + 8;
+    if(cl && cl.logo){
+      const ch=5, ratio=cl.logoRatio||1, cw=Math.min(ch*ratio, leftW*0.7);
+      doc.addImage(cl.logo,'PNG', padX, y2, cw, ch);
+      idBaseline = y2 + ch + 6;
+    }
     doc.setFont('helvetica','bold'); doc.setTextColor(0);
-    const idFit = fitSingleLine(doc, eq.id, textW, 13, 7.5);
+    const idFit = fitSingleLine(doc, eq.id, leftW, 13, 7.5);
     doc.setFontSize(idFit.size);
-    doc.text(idFit.text, padX, padTop+9);
+    doc.text(idFit.text, padX, idBaseline);
 
-    /* ---- tipo / marca ---- */
-    doc.setFont('helvetica','normal'); doc.setTextColor(70);
-    const tipoFit = fitSingleLine(doc, [eq.tipo, eq.marca].filter(Boolean).join(' '), textW, 6.8, 5.5);
+    doc.setFont('helvetica','normal'); doc.setTextColor(80);
+    const tipoFit = fitSingleLine(doc, [eq.tipo, eq.marca].filter(Boolean).join(' '), leftW, 6.8, 5.5);
     doc.setFontSize(tipoFit.size);
-    doc.text(tipoFit.text, padX, padTop+13.5);
+    doc.text(tipoFit.text, padX, idBaseline+4.4);
+
+    /* ---- QR grande a la derecha ---- */
+    const qrData = makeQRDataURL(eq.id, 200);
+    if(qrData) doc.addImage(qrData,'PNG', qrX, y2, qrSize, qrSize);
 
     /* ---- separador ---- */
+    const footY = y2 + qrSize + 1.6;
     doc.setDrawColor(222);
-    doc.line(padX, padTop+16, qrX-2.5, padTop+16);
+    doc.line(padX, footY, padRight, footY);
 
-    /* ---- Empresa (abajo, más pequeña) ---- */
+    /* ---- Franja 3: empresa (ancho completo, abajo, chica) ---- */
     let ex = padX;
+    const footTextY = footY + 3.2;
     if(S.settings.logo){
-      const ch=4.4, ratio=S.settings.logoRatio||1, cw=Math.min(ch*ratio, textW*0.35);
-      doc.addImage(S.settings.logo,'PNG', padX, padTop+18, cw, ch);
+      const ch=4, ratio=S.settings.logoRatio||1, cw=Math.min(ch*ratio, contentW*0.25);
+      doc.addImage(S.settings.logo,'PNG', padX, footY+0.8, cw, ch);
       ex = padX+cw+1.5;
     }
     doc.setFont('helvetica','bold'); doc.setTextColor(120);
-    const compFit = fitSingleLine(doc, (S.settings.empresa||'Servicio Técnico').toUpperCase(), textW-(ex-padX), 5.6, 4.4);
+    const compFit = fitSingleLine(doc, (S.settings.empresa||'Servicio Técnico').toUpperCase(), contentW-(ex-padX), 5.6, 4.4);
     doc.setFontSize(compFit.size);
-    doc.text(compFit.text, ex, padTop+21.5);
+    doc.text(compFit.text, ex, footTextY);
     if(S.settings.telefono){
       doc.setFont('helvetica','normal'); doc.setTextColor(150);
-      const phoneFit = fitSingleLine(doc, S.settings.telefono, textW-(ex-padX), 5.2, 4.4);
+      const phoneFit = fitSingleLine(doc, S.settings.telefono, contentW-(ex-padX), 5.2, 4.4);
       doc.setFontSize(phoneFit.size);
-      doc.text(phoneFit.text, ex, padTop+24.5);
+      doc.text(phoneFit.text, ex, footTextY+3);
     }
-
-    /* ---- QR ---- */
-    const qrData = makeQRDataURL(eq.id, 200);
-    if(qrData) doc.addImage(qrData,'PNG', qrX, yy+(lh-qrSize)/2, qrSize, qrSize);
 
     posIndex++;
   });
@@ -11575,19 +11579,24 @@ function printLabels(){
     cellsData.push({qrId, eqId: eq.id});
     const cl = getClient(eq.clientId);
     cellsHtml += `<div class="plabel">
-      <div class="pcol">
-        <div class="pclient">${cl&&cl.logo?`<img class="pclient-logo" src="${cl.logo}">`:''}<span class="pclient-name">${esc(cl?cl.name:'—')}</span></div>
-        <div class="pid">${eq.id}</div>
-        <div class="peq">${esc([eq.tipo,eq.marca].filter(Boolean).join(' '))}</div>
-        <div class="pcompany">
-          ${S.settings.logo?`<img class="pco-logo" src="${S.settings.logo}">`:''}
-          <div class="pco-text">
-            <div class="pco-name">${esc(S.settings.empresa||'Servicio Técnico')}</div>
-            ${S.settings.telefono?`<div class="pco-phone">${esc(S.settings.telefono)}</div>`:''}
+      <div class="pinner">
+        <div class="ptop">${esc(cl?cl.name:'—')}</div>
+        <div class="pmid">
+          <div class="pmid-left">
+            ${cl&&cl.logo?`<img class="pmid-logo" src="${cl.logo}">`:''}
+            <div class="pid">${eq.id}</div>
+            <div class="peq">${esc([eq.tipo,eq.marca].filter(Boolean).join(' '))}</div>
+          </div>
+          <div class="pqr" id="${qrId}"></div>
+        </div>
+        <div class="pfoot">
+          ${S.settings.logo?`<img class="pfoot-logo" src="${S.settings.logo}">`:''}
+          <div class="pfoot-text">
+            <div class="pfoot-name">${esc(S.settings.empresa||'Servicio Técnico')}</div>
+            ${S.settings.telefono?`<div class="pfoot-phone">${esc(S.settings.telefono)}</div>`:''}
           </div>
         </div>
       </div>
-      <div class="pqr" id="${qrId}"></div>
     </div>`;
   });
   container.innerHTML = `<div class="sheet-a4">${cellsHtml}</div>`;
