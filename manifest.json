@@ -1,0 +1,19 @@
+{
+  "name": "Bitácora TI - Proyectos de Ingeniería en Redes",
+  "short_name": "Bitácora TI",
+  "description": "Gestión de clientes, equipos, hojas de servicio y etiquetas con QR para servicio técnico de TI.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "id": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#12161D",
+  "theme_color": "#003054",
+  "lang": "es-MX",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-192-maskable.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
