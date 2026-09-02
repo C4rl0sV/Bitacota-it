@@ -570,23 +570,77 @@ const S = {
 };
 
 const STORAGE_PREFIX = 'bitacora_ti_';
-function storageGet(key){
-  try{ const v = localStorage.getItem(STORAGE_PREFIX+key); return v ? JSON.parse(v) : null; }
-  catch(e){ console.error('storage read error',key,e); return null; }
+const IDB_NAME = 'bitacora_ti_db';
+const IDB_STORE = 'kv';
+let idbPromise = null;
+function idbOpen(){
+  if(idbPromise) return idbPromise;
+  idbPromise = new Promise((resolve,reject)=>{
+    try{
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = ()=>{ if(!req.result.objectStoreNames.contains(IDB_STORE)) req.result.createObjectStore(IDB_STORE); };
+      req.onsuccess = ()=> resolve(req.result);
+      req.onerror = ()=> reject(req.error);
+    }catch(e){ reject(e); }
+  });
+  return idbPromise;
 }
-function storageSet(key,val){
-  try{ localStorage.setItem(STORAGE_PREFIX+key, JSON.stringify(val)); return true; }
-  catch(e){ console.error('storage write error',key,e); toast('No se pudo guardar (¿memoria del navegador llena?)'); return false; }
+async function storageGet(key){
+  try{
+    const db = await idbOpen();
+    return await new Promise((resolve,reject)=>{
+      const tx = db.transaction(IDB_STORE,'readonly');
+      const req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = ()=> resolve(req.result!==undefined ? req.result : null);
+      req.onerror = ()=> reject(req.error);
+    });
+  }catch(e){ console.error('storage read error',key,e); return null; }
+}
+async function storageSet(key,val){
+  try{
+    const db = await idbOpen();
+    await new Promise((resolve,reject)=>{
+      const tx = db.transaction(IDB_STORE,'readwrite');
+      tx.objectStore(IDB_STORE).put(val, key);
+      tx.oncomplete = ()=> resolve(true);
+      tx.onerror = ()=> reject(tx.error);
+    });
+    return true;
+  }catch(e){
+    console.error('storage write error',key,e);
+    toast('No se pudo guardar (revisa el espacio disponible en tu celular)');
+    return false;
+  }
+}
+async function migrateFromLocalStorageIfNeeded(){
+  try{
+    const already = await storageGet('clients');
+    if(already !== null) return; // ya hay datos en IndexedDB, no migrar
+    const keys = ['clients','equipment','sheets','settings'];
+    let migratedAny = false;
+    for(const key of keys){
+      const raw = localStorage.getItem(STORAGE_PREFIX+key);
+      if(raw){
+        try{
+          const val = JSON.parse(raw);
+          const ok = await storageSet(key, val);
+          if(ok){ localStorage.removeItem(STORAGE_PREFIX+key); migratedAny = true; }
+        }catch(e){ /* si un bloque no se pudo migrar, se deja intacto en localStorage por seguridad */ }
+      }
+    }
+    if(migratedAny) toast('Tus datos se movieron a un almacenamiento con más espacio ✓');
+  }catch(e){ console.error('migration error', e); }
 }
 async function loadAll(){
-  const c = storageGet('clients'), e = storageGet('equipment'), s = storageGet('sheets'), cfg = storageGet('settings');
+  await migrateFromLocalStorageIfNeeded();
+  const c = await storageGet('clients'), e = await storageGet('equipment'), s = await storageGet('sheets'), cfg = await storageGet('settings');
   S.clients = c || []; S.equipment = e || []; S.sheets = s || [];
-  S.settings = cfg || { empresa:'', telefono:'', email:'', direccion:'', logo:'', logoRatio:1, sufijoEquipo:'' };
+  S.settings = cfg || { empresa:'', telefono:'', email:'', direccion:'', logo:'', logoRatio:1, sufijoEquipo:'', lastBackupAt:'' };
 }
-async function persistClients(){ storageSet('clients', S.clients); }
-async function persistEquipment(){ storageSet('equipment', S.equipment); }
-async function persistSheets(){ storageSet('sheets', S.sheets); }
-async function persistSettings(){ storageSet('settings', S.settings); }
+async function persistClients(){ await storageSet('clients', S.clients); }
+async function persistEquipment(){ await storageSet('equipment', S.equipment); }
+async function persistSheets(){ await storageSet('sheets', S.sheets); }
+async function persistSettings(){ await storageSet('settings', S.settings); }
 
 function genId(list, prefix, field){
   let max = 0;
@@ -819,11 +873,19 @@ function afterRender(c){
 /* ============================================================
    VISTA: HOME
    ============================================================ */
+function daysSince(iso){
+  if(!iso) return Infinity;
+  const then = new Date(iso).getTime();
+  if(isNaN(then)) return Infinity;
+  return Math.floor((Date.now()-then)/86400000);
+}
 function viewHome(){
   const totalEquipos = S.equipment.length;
   const mesActual = todayISO().slice(0,7);
   const serviciosMes = S.sheets.filter(s=>s.fecha.startsWith(mesActual)).length;
   const empresa = S.settings.empresa || 'Bitácora TI';
+  const backupDays = daysSince(S.settings.lastBackupAt);
+  const showBackupBanner = S.clients.length > 0 && backupDays >= 7;
 
   let clientsHtml = '';
   if(S.clients.length===0){
@@ -859,6 +921,15 @@ function viewHome(){
   </div>
   <main>
     <div class="titlebig">Clientes</div>
+    ${showBackupBanner ? `<div class="card" style="border-color:var(--warn-dim);background:#241f14;margin-bottom:14px;">
+      <div class="row">
+        <div style="flex:1;">
+          <div style="font-weight:600;font-size:13px;color:var(--warn);">📦 Respalda tus datos</div>
+          <div class="muted" style="font-size:11.5px;margin-top:2px;">${backupDays===Infinity? 'Aún no has hecho ningún respaldo' : 'Hace '+backupDays+' días de tu último respaldo'} · se guarda solo en este celular</div>
+        </div>
+        <button class="btn btn-primary" style="width:auto;padding:9px 14px;flex:0 0 auto;" onclick="exportBackup()">Exportar</button>
+      </div>
+    </div>` : ''}
     <div class="row" style="gap:8px;margin-bottom:16px;">
       <div class="stat"><div class="n">${S.clients.length}</div><div class="l">Clientes</div></div>
       <div class="stat"><div class="n">${totalEquipos}</div><div class="l">Equipos</div></div>
@@ -1689,7 +1760,7 @@ function viewSettings(){
     <button class="btn btn-primary" onclick="saveSettingsForm()">Guardar</button>
 
     <div class="section-label">Respaldo de datos</div>
-    <p class="muted" style="font-size:12px;margin-top:-2px;">Esta app guarda todo en este navegador/celular (sin internet). Si cambias de teléfono, limpias datos del navegador, o abres el archivo desde otra copia, esa información no viaja sola. Exporta un respaldo de vez en cuando y guárdalo aparte (correo, Drive, etc.).</p>
+    <p class="muted" style="font-size:12px;margin-top:-2px;">Esta app guarda todo en este celular, sin internet. Si lo formateas, cambias de teléfono, o borras datos del navegador (la opción "Cookies y datos de sitios", no la de "caché"), esa información no viaja sola. A partir de 7 días sin respaldar, verás un aviso en Inicio para recordarte exportar.</p>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="exportBackup()">⬇ Exportar respaldo</button>
     </div>
@@ -1716,7 +1787,10 @@ function exportBackup(){
   a.href = url; a.download = 'respaldo-bitacora-ti-'+todayISO()+'.json';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(()=>URL.revokeObjectURL(url), 4000);
-  toast('Respaldo descargado');
+  S.settings.lastBackupAt = new Date().toISOString();
+  persistSettings();
+  if(current().view==='home') render();
+  toast('Respaldo descargado — guárdalo en Drive, correo o donde prefieras');
 }
 async function importBackupFile(input){
   const file = input.files[0]; if(!file) return;
