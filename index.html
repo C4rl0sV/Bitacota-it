@@ -502,13 +502,14 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   .photo-remove{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:7px;background:rgba(18,22,29,.75);border:1px solid rgba(255,255,255,.25);color:#fff;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
 
   #printArea{display:none;}
+  @page{ size: letter; margin: 0; }
   @media print{
     body *{visibility:hidden;}
     #printArea, #printArea *{visibility:visible;}
-    #printArea{display:block;position:absolute;left:0;top:0;width:210mm;}
+    #printArea{display:block;position:absolute;left:0;top:0;width:216mm;}
     .no-print{display:none!important;}
   }
-  .sheet-a4{width:210mm;padding:8mm 15mm;display:grid;grid-template-columns:repeat(3,60mm);column-gap:0mm;row-gap:2mm;}
+  .sheet-a4{width:216mm;padding:8mm 18mm;display:grid;grid-template-columns:repeat(3,60mm);column-gap:0mm;row-gap:2mm;}
   .plabel{width:60mm;height:40mm;border:0.3mm dashed #999;border-radius:1.5mm;padding:3.2mm;background:#fff;overflow:hidden;}
   .plabel .pinner{display:flex;flex-direction:column;height:100%;min-height:0;}
   .plabel .ptop{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:7.8pt;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.1pt;}
@@ -1403,8 +1404,8 @@ function downloadSheetPDF(id){
   const eq = getEquipment(sheet.equipmentId);
   const cl = getClient(sheet.clientId);
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({unit:'mm', format:'a4'});
-  const margin = 16, pageWidth=210, contentWidth=pageWidth-margin*2;
+  const doc = new jsPDF({unit:'mm', format:'letter'});
+  const margin = 16, pageWidth=216, contentWidth=pageWidth-margin*2;
   const blockTop = margin;
   let textX = margin;
   if(S.settings.logo){
@@ -1555,7 +1556,7 @@ function viewLabels(){
         <span class="id-chip">${e.id}</span> <strong>${esc(e.tipo)}</strong>
         <div class="muted" style="font-size:11.5px;">${esc(clientName)} · ${esc(e.marca||'')} ${esc(e.modelo||'')}</div>
       </div>
-      <input type="number" min="1" max="20" value="${qty}" onchange="setQueueQty('${e.id}', this.value)" ${checked?'':'disabled'}>
+      <input type="number" id="qtyInput-${e.id}" min="1" max="20" value="${qty}" onchange="setQueueQty('${e.id}', this.value)" ${checked?'':'disabled'}>
     </div>`;
   }).join('');
   const totalLabels = S.labelQueue.reduce((a,q)=>a+q.qty,0);
@@ -1569,20 +1570,32 @@ function viewLabels(){
     </div>
     <div class="card" style="padding:0;" id="labelsList">${rows}</div>
     <div id="labelsEmptyFilter" class="empty" style="display:none;padding:20px 10px;"><p>Ningún equipo de ese cliente.</p></div>
-    <p class="muted" style="font-size:12px;margin:12px 2px;">Etiquetas de 6 × 4 cm, 3 por fila, listas para hoja A4 (para caber el logo, tu teléfono, el ID y el QR con buen tamaño). Cada una lleva el ID del equipo y un código QR con ese mismo ID, para localizar su historial en la app.</p>
+    <p class="muted" style="font-size:12px;margin:12px 2px;">Etiquetas de 6 × 4 cm, 3 por fila, listas para hoja tamaño Carta (para caber el logo, tu teléfono, el ID y el QR con buen tamaño). Cada una lleva el ID del equipo y un código QR con ese mismo ID, para localizar su historial en la app.</p>
     <div class="btn-row">
-      <button class="btn btn-primary" onclick="generateLabelsPDF()" ${totalLabels? '' : 'disabled'}>⬇ Descargar PDF (${totalLabels})</button>
-      <button class="btn btn-secondary" onclick="printLabels()" ${totalLabels? '' : 'disabled'}>Imprimir</button>
+      <button id="btnDownloadLabels" class="btn btn-primary" onclick="generateLabelsPDF()" ${totalLabels? '' : 'disabled'}>⬇ Descargar PDF (${totalLabels})</button>
+      <button id="btnPrintLabels" class="btn btn-secondary" onclick="printLabels()" ${totalLabels? '' : 'disabled'}>Imprimir</button>
     </div>
     `}
   </main>
   ${tabbar('labels')}
   `;
 }
+function updateLabelsActionBar(){
+  const totalLabels = S.labelQueue.reduce((a,q)=>a+q.qty,0);
+  const dl = document.getElementById('btnDownloadLabels');
+  const pr = document.getElementById('btnPrintLabels');
+  if(dl){ dl.disabled = totalLabels===0; dl.textContent = '⬇ Descargar PDF ('+totalLabels+')'; }
+  if(pr){ pr.disabled = totalLabels===0; }
+}
 function toggleQueue(id, checked){
   if(checked){ if(!S.labelQueue.find(x=>x.id===id)) S.labelQueue.push({id,qty:1}); }
   else { S.labelQueue = S.labelQueue.filter(x=>x.id!==id); }
-  render();
+  const qtyInput = document.getElementById('qtyInput-'+id);
+  if(qtyInput){
+    qtyInput.disabled = !checked;
+    if(checked){ const q = S.labelQueue.find(x=>x.id===id); qtyInput.value = q ? q.qty : 1; }
+  }
+  updateLabelsActionBar();
 }
 function setQueueQty(id, val){
   const q = S.labelQueue.find(x=>x.id===id);
@@ -1630,13 +1643,13 @@ function generateLabelsPDF(){
   const items = expandQueue();
   if(!items.length){ toast('Selecciona al menos un equipo'); return; }
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({unit:'mm', format:'a4'});
-  const marginX=15, marginY=8, lw=60, lh=40, cols=3, rowGap=2;
+  const doc = new jsPDF({unit:'mm', format:'letter'});
+  const marginX=18, marginY=8, lw=60, lh=40, cols=3, rowGap=2;
   let posIndex = 0;
   items.forEach(eq=>{
     let col = posIndex % cols, row = Math.floor(posIndex/cols);
     let xx = marginX+col*lw, yy = marginY+row*(lh+rowGap);
-    if(yy+lh > 297-marginY){ doc.addPage(); posIndex=0; col=0; row=0; xx=marginX; yy=marginY; }
+    if(yy+lh > 279-marginY){ doc.addPage(); posIndex=0; col=0; row=0; xx=marginX; yy=marginY; }
     const cl = getClient(eq.clientId);
     doc.setDrawColor(170);
     doc.rect(xx+0.5, yy+0.5, lw-1, lh-1);
