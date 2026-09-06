@@ -659,10 +659,21 @@ function esc(str){ return (str==null?'':str).toString().replace(/[&<>"']/g, c=>(
 /* ============================================================
    NAVEGACION
    ============================================================ */
-function nav(view, params){ S.history.push({view, ...(params||{})}); render(); window.scrollTo(0,0); }
-function navReplace(view, params){ S.history[S.history.length-1] = {view, ...(params||{})}; render(); window.scrollTo(0,0); }
-function goHome(){ S.history = [{view:'home'}]; render(); window.scrollTo(0,0); }
-function goBack(){ if(S.history.length>1){ S.history.pop(); render(); window.scrollTo(0,0); } }
+function pushHistoryState(){
+  try{ history.pushState({stack: JSON.parse(JSON.stringify(S.history))}, ''); }catch(e){}
+}
+function replaceHistoryState(){
+  try{ history.replaceState({stack: JSON.parse(JSON.stringify(S.history))}, ''); }catch(e){}
+}
+function nav(view, params){ S.history.push({view, ...(params||{})}); pushHistoryState(); render(); window.scrollTo(0,0); }
+function navReplace(view, params){ S.history[S.history.length-1] = {view, ...(params||{})}; replaceHistoryState(); render(); window.scrollTo(0,0); }
+function goHome(){ S.history = [{view:'home'}]; pushHistoryState(); render(); window.scrollTo(0,0); }
+function goBack(){ history.back(); }
+window.addEventListener('popstate', function(e){
+  S.history = (e.state && e.state.stack && e.state.stack.length) ? e.state.stack : [{view:'home'}];
+  render();
+  window.scrollTo(0,0);
+});
 function current(){ return S.history[S.history.length-1]; }
 
 function toast(msg){
@@ -1827,6 +1838,7 @@ async function importBackupFile(input){
 (async function init(){
   await loadAll();
   render();
+  replaceHistoryState();
   if('serviceWorker' in navigator){
     try{ await navigator.serviceWorker.register('./sw.js'); }
     catch(e){ /* si se abre como archivo local sin servidor, el service worker no aplica; la app sigue funcionando igual */ }
