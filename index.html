@@ -696,6 +696,23 @@ function tipoServicioLabel(t){ return {preventivo:'Preventivo',correctivo:'Corre
 function tipoServicioPillClass(t){ return {preventivo:'prev',correctivo:'corr',instalacion:'inst',soporte:'sop'}[t] || ''; }
 function estadoPillClass(e){ return e==='completado' ? 'ok' : 'pend'; }
 
+/* ---- Costo del servicio (factura, IVA, retenciones RESICO) ---- */
+function computeCostBreakdown(costo, requiereFactura, retencionIva){
+  const subtotal = parseFloat(costo) || 0;
+  if(!requiereFactura){
+    return { subtotal, iva:0, ivaRetenido:0, ivaNeto:0, isrRetenido:0, total:subtotal, requiereFactura:false };
+  }
+  const iva = subtotal * 0.16;
+  const ivaRetenido = retencionIva==='con' ? subtotal * (0.16 * 2/3) : 0;
+  const ivaNeto = iva - ivaRetenido;
+  const isrRetenido = subtotal * 0.0125;
+  const total = subtotal + ivaNeto - isrRetenido;
+  return { subtotal, iva, ivaRetenido, ivaNeto, isrRetenido, total, requiereFactura:true };
+}
+function fmtMoney(n){
+  return '$' + (n||0).toLocaleString('es-MX', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
 /* ---- ID de equipo: TIPO-CLI00001-SUFIJO (ej. LAP-MAR00001-PIR) ---- */
 const TYPE_ABBR = {
   'Computadora de escritorio':'PC','Laptop':'LAP','Impresora':'IMP','Servidor':'SRV',
@@ -879,6 +896,7 @@ function afterRender(c){
   }
   if(c.view==='sheetForm'){
     renderPhotoThumbs();
+    updateCostPreview();
   }
 }
 
@@ -1253,7 +1271,7 @@ function viewSheetForm(equipmentId, sheetId){
   const eq = eqId ? getEquipment(eqId) : null;
   const cl = eq ? getClient(eq.clientId) : null;
   const lastTecnico = S.sheets.length ? S.sheets[S.sheets.length-1].tecnico : '';
-  const d = editing ? sheet : { fecha:todayISO(), tecnico:lastTecnico, tipoServicio:'preventivo', diagnostico:'', trabajoRealizado:'', refacciones:'', recomendaciones:'', proximoMantenimiento:'', estado:'completado' };
+  const d = editing ? sheet : { fecha:todayISO(), tecnico:lastTecnico, tipoServicio:'preventivo', diagnostico:'', trabajoRealizado:'', refacciones:'', recomendaciones:'', proximoMantenimiento:'', estado:'completado', costo:'', requiereFactura:false, retencionIva:'sin' };
   draftPhotos = (editing && sheet.photos) ? sheet.photos.slice() : [];
 
   const selectorHtml = (eq && cl) ? `
@@ -1293,6 +1311,23 @@ function viewSheetForm(equipmentId, sheetId){
     <label class="field"><span>Refacciones / materiales utilizados</span><textarea id="f_refacciones" placeholder="Ej. 1 fusor, 1 memoria RAM 8GB…">${esc(d.refacciones)}</textarea></label>
     <label class="field"><span>Recomendaciones</span><textarea id="f_recomendaciones" placeholder="Recomendaciones para el cliente">${esc(d.recomendaciones)}</textarea></label>
     <label class="field"><span>Próximo mantenimiento</span><input type="date" id="f_proximo" value="${d.proximoMantenimiento||''}"></label>
+
+    <div class="section-label">Costo del servicio</div>
+    <label class="field"><span>Costo (subtotal, sin IVA)</span><input type="number" id="f_costo" step="0.01" min="0" value="${d.costo!=null && d.costo!==''?d.costo:''}" placeholder="0.00" inputmode="decimal" oninput="updateCostPreview()"></label>
+    <label class="field" style="display:flex;align-items:center;gap:10px;">
+      <input type="checkbox" id="f_requiereFactura" style="width:auto;flex:0 0 auto;" ${d.requiereFactura?'checked':''} onchange="toggleFacturaFields(); updateCostPreview();">
+      <span style="margin:0;">¿Requiere factura?</span>
+    </label>
+    <div id="facturaFields" style="${d.requiereFactura?'':'display:none;'}">
+      <label class="field"><span>Retención de IVA (RESICO)</span>
+        <select id="f_retencionIva" onchange="updateCostPreview()">
+          <option value="sin" ${d.retencionIva!=='con'?'selected':''}>Sin retención</option>
+          <option value="con" ${d.retencionIva==='con'?'selected':''}>Con retención (2/3 del IVA)</option>
+        </select>
+      </label>
+      <p class="muted" style="font-size:11.5px;margin-top:-6px;">Se calcula automático: IVA 16%, e ISR retenido 1.25% (RESICO, cuando quien paga es persona moral).</p>
+    </div>
+    <div id="costPreview" class="card"></div>
     <label class="field"><span>Estado</span>
       <select id="f_estado">
         <option value="completado" ${d.estado==='completado'?'selected':''}>Completado</option>
@@ -1322,6 +1357,31 @@ function updateEquipOptions(){
   const eqs = equipmentByClient(clientId);
   eqSel.innerHTML = eqs.length ? '<option value="">Selecciona un equipo…</option>' + eqs.map(e=>`<option value="${e.id}">${e.id} · ${esc(e.tipo)} ${esc(e.marca||'')}</option>`).join('') : '<option value="">Este cliente no tiene equipos</option>';
 }
+function toggleFacturaFields(){
+  const box = document.getElementById('facturaFields');
+  const checked = document.getElementById('f_requiereFactura').checked;
+  if(box) box.style.display = checked ? 'block' : 'none';
+}
+function updateCostPreview(){
+  const costoEl = document.getElementById('f_costo');
+  const facturaEl = document.getElementById('f_requiereFactura');
+  const retEl = document.getElementById('f_retencionIva');
+  const box = document.getElementById('costPreview');
+  if(!box || !costoEl) return;
+  const b = computeCostBreakdown(costoEl.value, facturaEl && facturaEl.checked, retEl ? retEl.value : 'sin');
+  if(!b.subtotal && !b.requiereFactura){ box.innerHTML = `<span class="muted" style="font-size:12px;">Captura el costo para ver el desglose.</span>`; return; }
+  if(!b.requiereFactura){
+    box.innerHTML = `<div class="row"><span class="muted" style="font-size:12px;">Total (sin factura)</span><strong>${fmtMoney(b.total)}</strong></div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">Subtotal</span><span>${fmtMoney(b.subtotal)}</span></div>
+    <div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">IVA (16%)</span><span>${fmtMoney(b.iva)}</span></div>
+    ${b.ivaRetenido>0?`<div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">IVA retenido (2/3)</span><span>- ${fmtMoney(b.ivaRetenido)}</span></div>`:''}
+    <div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">ISR retenido (1.25%)</span><span>- ${fmtMoney(b.isrRetenido)}</span></div>
+    <div class="row" style="border-top:1px dashed var(--border);padding-top:7px;margin-top:2px;"><strong>Total a cobrar</strong><strong>${fmtMoney(b.total)}</strong></div>
+  `;
+}
 async function saveSheet(sheetId, fixedEquipmentId){
   let equipmentId = fixedEquipmentId;
   if(!equipmentId){ const sel = document.getElementById('f_sel_equip'); equipmentId = sel ? sel.value : ''; }
@@ -1339,6 +1399,9 @@ async function saveSheet(sheetId, fixedEquipmentId){
     recomendaciones: document.getElementById('f_recomendaciones').value.trim(),
     proximoMantenimiento: document.getElementById('f_proximo').value,
     estado: document.getElementById('f_estado').value,
+    costo: parseFloat(document.getElementById('f_costo').value) || 0,
+    requiereFactura: document.getElementById('f_requiereFactura').checked,
+    retencionIva: document.getElementById('f_retencionIva') ? document.getElementById('f_retencionIva').value : 'sin',
     photos: draftPhotos.slice(),
   };
   let sheet;
@@ -1363,6 +1426,19 @@ function sheetField(label, value){
   return `<div style="margin-bottom:10px;"><div class="muted" style="font-size:11px;">${label.toUpperCase()}</div><div style="font-size:13.5px;line-height:1.45;">${esc(value).replace(/\n/g,'<br>')}</div></div>`;
 }
 const PHOTO_LABEL_TEXT = {antes:'Antes', despues:'Después', evidencia:'Evidencia'};
+function renderSheetCost(s){
+  if(!s.costo && !s.requiereFactura) return '';
+  const b = computeCostBreakdown(s.costo, s.requiereFactura, s.retencionIva);
+  let rows = `<div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">Subtotal</span><span>${fmtMoney(b.subtotal)}</span></div>`;
+  if(b.requiereFactura){
+    rows += `<div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">IVA (16%)</span><span>${fmtMoney(b.iva)}</span></div>`;
+    if(b.ivaRetenido>0) rows += `<div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">IVA retenido (2/3)</span><span>- ${fmtMoney(b.ivaRetenido)}</span></div>`;
+    rows += `<div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">ISR retenido (1.25%)</span><span>- ${fmtMoney(b.isrRetenido)}</span></div>`;
+  }
+  rows += `<div class="row" style="border-top:1px dashed var(--border);padding-top:7px;margin-top:2px;"><strong>Total ${b.requiereFactura?'a cobrar':''}</strong><strong>${fmtMoney(b.total)}</strong></div>`;
+  return `<div class="muted" style="font-size:11px;margin-top:10px;">COSTO DEL SERVICIO ${b.requiereFactura?'· CON FACTURA':'· SIN FACTURA'}</div>
+    <div class="card" style="margin-top:6px;">${rows}</div>`;
+}
 function renderSheetPhotos(photos){
   if(!photos || !photos.length) return '';
   const groups = {antes:[], despues:[], evidencia:[]};
@@ -1400,6 +1476,7 @@ function viewSheetDetail(id){
         ${sheetField('Refacciones utilizadas', s.refacciones)}
         ${sheetField('Recomendaciones', s.recomendaciones)}
         ${s.proximoMantenimiento? sheetField('Próximo mantenimiento', fmtDate(s.proximoMantenimiento)) : ''}
+        ${renderSheetCost(s)}
         ${renderSheetPhotos(s.photos)}
       </div>
     </div>
@@ -1504,6 +1581,29 @@ function downloadSheetPDF(id){
     photoGroup('Antes', byLabel.antes);
     photoGroup('Después', byLabel.despues);
     photoGroup('Evidencia', byLabel.evidencia);
+  }
+
+  if(sheet.costo || sheet.requiereFactura){
+    const b = computeCostBreakdown(sheet.costo, sheet.requiereFactura, sheet.retencionIva);
+    const lineCount = 1 + (b.requiereFactura ? (2 + (b.ivaRetenido>0?1:0)) : 0) + 1;
+    ensureSpace(8 + lineCount*5.2);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(130);
+    doc.text('COSTO DEL SERVICIO'+(b.requiereFactura?' (CON FACTURA)':' (SIN FACTURA)'), margin, y); y += 6;
+    function costLine(label, value, bold){
+      doc.setFont('helvetica', bold?'bold':'normal'); doc.setFontSize(9.5); doc.setTextColor(bold?20:70);
+      doc.text(label, margin, y);
+      doc.text(value, margin+contentWidth, y, {align:'right'});
+      y += 5.2;
+    }
+    costLine('Subtotal', fmtMoney(b.subtotal));
+    if(b.requiereFactura){
+      costLine('IVA (16%)', fmtMoney(b.iva));
+      if(b.ivaRetenido>0) costLine('IVA retenido (2/3)', '- '+fmtMoney(b.ivaRetenido));
+      costLine('ISR retenido (1.25%)', '- '+fmtMoney(b.isrRetenido));
+    }
+    doc.setDrawColor(200); doc.line(margin, y-1.5, margin+contentWidth, y-1.5); y += 1.5;
+    costLine('Total'+(b.requiereFactura?' a cobrar':''), fmtMoney(b.total), true);
+    y += 6;
   }
 
   ensureSpace(40); y += 12;
