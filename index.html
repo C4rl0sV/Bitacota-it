@@ -474,6 +474,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   .scanner-frame{position:relative;width:68vw;max-width:270px;aspect-ratio:1/1;border:3px solid var(--blue);border-radius:16px;box-shadow:0 0 0 9999px rgba(0,0,0,.5);}
   .scanner-status{position:absolute;bottom:80px;left:0;right:0;text-align:center;color:#fff;font-size:13px;padding:0 26px;line-height:1.4;}
   .scanner-close{position:absolute;top:calc(18px + env(safe-area-inset-top,0px));right:16px;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.35);color:#fff;padding:8px 14px;border-radius:20px;font-size:13px;cursor:pointer;}
+  .scanner-torch{position:absolute;top:calc(18px + env(safe-area-inset-top,0px));left:16px;width:38px;height:38px;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:50%;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+  .scanner-torch.active{background:var(--blue);border-color:var(--blue);}
+  .scanner-zoom{position:absolute;bottom:28px;left:50%;transform:translateX(-50%);width:70%;max-width:260px;display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.35);padding:8px 14px;border-radius:20px;}
+  .scanner-zoom input[type=range]{flex:1;accent-color:var(--blue);}
 
   .id-chip{font-family:var(--font-mono);font-size:11.5px;color:var(--cyan);background:#0F262B;border:1px solid #1B4550;padding:2px 7px;border-radius:6px;}
   .stat{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px;flex:1;text-align:center;}
@@ -500,6 +504,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   .photo-thumb{width:100%;height:92px;object-fit:cover;display:block;cursor:pointer;}
   .photo-label-select{position:absolute;left:0;right:0;bottom:0;width:100%;border-radius:0;font-size:10.5px;padding:4px 4px;border:none;background:rgba(18,22,29,.82);color:#fff;}
   .photo-remove{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:7px;background:rgba(18,22,29,.75);border:1px solid rgba(255,255,255,.25);color:#fff;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
+
+  .sig-pad-wrap{position:relative;width:100%;height:160px;background:#fff;border:1px solid var(--border);border-radius:12px;overflow:hidden;}
+  .sig-canvas{width:100%;height:100%;touch-action:none;display:block;}
+  .sig-placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#B7BEC6;font-size:13px;pointer-events:none;font-family:var(--font-body);}
+  .sig-saved-img{width:100%;max-height:140px;object-fit:contain;background:#fff;border-radius:10px;border:1px solid var(--border);}
 
   #printArea{display:none;}
   @page{ size: letter; margin: 0; }
@@ -539,6 +548,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     <div class="scanner-frame"></div>
     <div class="scanner-status" id="scannerStatus">Apunta al código QR del equipo…</div>
     <button class="scanner-close" onclick="stopScanner()">✕ Cerrar</button>
+    <button id="torchBtn" class="scanner-torch" style="display:none;" onclick="toggleTorch()">🔦</button>
+    <div id="zoomWrap" class="scanner-zoom" style="display:none;">
+      <span style="font-size:12px;">🔍</span>
+      <input type="range" id="zoomSlider" oninput="onZoomChange(this.value)">
+    </div>
   </div>
 </div>
 
@@ -564,7 +578,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
    ESTADO Y PERSISTENCIA
    ============================================================ */
 const S = {
-  clients: [], equipment: [], sheets: [],
+  clients: [], equipment: [], sheets: [], receptions: [],
   settings: { empresa:'', telefono:'', email:'', direccion:'', logo:'', logoRatio:1, sufijoEquipo:'' },
   history: [{view:'home'}],
   labelQueue: []
@@ -634,13 +648,14 @@ async function migrateFromLocalStorageIfNeeded(){
 }
 async function loadAll(){
   await migrateFromLocalStorageIfNeeded();
-  const c = await storageGet('clients'), e = await storageGet('equipment'), s = await storageGet('sheets'), cfg = await storageGet('settings');
-  S.clients = c || []; S.equipment = e || []; S.sheets = s || [];
+  const c = await storageGet('clients'), e = await storageGet('equipment'), s = await storageGet('sheets'), r = await storageGet('receptions'), cfg = await storageGet('settings');
+  S.clients = c || []; S.equipment = e || []; S.sheets = s || []; S.receptions = r || [];
   S.settings = cfg || { empresa:'', telefono:'', email:'', direccion:'', logo:'', logoRatio:1, sufijoEquipo:'', lastBackupAt:'' };
 }
 async function persistClients(){ await storageSet('clients', S.clients); }
 async function persistEquipment(){ await storageSet('equipment', S.equipment); }
 async function persistSheets(){ await storageSet('sheets', S.sheets); }
+async function persistReceptions(){ await storageSet('receptions', S.receptions); }
 async function persistSettings(){ await storageSet('settings', S.settings); }
 
 function genId(list, prefix, field){
@@ -692,6 +707,7 @@ function equipmentByClient(clientId){ return S.equipment.filter(e=>e.clientId===
 function sheetsByEquipment(equipmentId){ return S.sheets.filter(s=>s.equipmentId===equipmentId).sort((a,b)=> b.fecha.localeCompare(a.fecha)); }
 function sheetsByClient(clientId){ return S.sheets.filter(s=>s.clientId===clientId); }
 function lastSheetFor(equipmentId){ return sheetsByEquipment(equipmentId)[0] || null; }
+function receptionsByEquipment(equipmentId){ return S.receptions.filter(r=>r.equipmentId===equipmentId).sort((a,b)=> b.fecha.localeCompare(a.fecha)); }
 function tipoServicioLabel(t){ return {preventivo:'Preventivo',correctivo:'Correctivo',instalacion:'Instalación',soporte:'Soporte'}[t] || t; }
 function tipoServicioPillClass(t){ return {preventivo:'prev',correctivo:'corr',instalacion:'inst',soporte:'sop'}[t] || ''; }
 function estadoPillClass(e){ return e==='completado' ? 'ok' : 'pend'; }
@@ -815,6 +831,66 @@ function removeDraftPhoto(id){
   renderPhotoThumbs();
 }
 
+/* ---- Firma digital del cliente (lienzo táctil, reutilizable) ---- */
+let draftSignatureDataUrl = '';
+let sigCtx = null, sigHasContent = false, sigDrawing = false, sigLast = null;
+function initSignaturePad(){
+  const canvas = document.getElementById('sigCanvas');
+  if(!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(rect.width*dpr));
+  canvas.height = Math.max(1, Math.round(rect.height*dpr));
+  sigCtx = canvas.getContext('2d');
+  sigCtx.scale(dpr, dpr);
+  sigCtx.lineWidth = 2.3; sigCtx.lineCap = 'round'; sigCtx.lineJoin = 'round'; sigCtx.strokeStyle = '#141414';
+  sigHasContent = false;
+  const placeholder = document.getElementById('sigPlaceholder');
+  if(draftSignatureDataUrl){
+    const img = new Image();
+    img.onload = ()=>{ sigCtx.drawImage(img, 0, 0, rect.width, rect.height); sigHasContent = true; if(placeholder) placeholder.style.display = 'none'; };
+    img.src = draftSignatureDataUrl;
+  } else if(placeholder){ placeholder.style.display = 'flex'; }
+
+  function posFromEvent(e){
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  function start(e){ e.preventDefault(); sigDrawing = true; sigLast = posFromEvent(e); if(placeholder) placeholder.style.display = 'none'; }
+  function move(e){ if(!sigDrawing) return; e.preventDefault(); const p = posFromEvent(e); sigCtx.beginPath(); sigCtx.moveTo(sigLast.x, sigLast.y); sigCtx.lineTo(p.x, p.y); sigCtx.stroke(); sigLast = p; sigHasContent = true; }
+  function end(){ sigDrawing = false; }
+  canvas.onpointerdown = start;
+  canvas.onpointermove = move;
+  canvas.onpointerup = end;
+  canvas.onpointerleave = end;
+}
+function clearSignature(){
+  const canvas = document.getElementById('sigCanvas');
+  if(!canvas || !sigCtx) return;
+  sigCtx.clearRect(0, 0, canvas.width, canvas.height);
+  sigHasContent = false;
+  draftSignatureDataUrl = '';
+  const placeholder = document.getElementById('sigPlaceholder');
+  if(placeholder) placeholder.style.display = 'flex';
+}
+function getSignatureDataUrl(){
+  const canvas = document.getElementById('sigCanvas');
+  if(!canvas || !sigHasContent) return '';
+  return canvas.toDataURL('image/png');
+}
+function signaturePadHtml(){
+  return `
+    <div class="section-label">Firma de conformidad del cliente</div>
+    <div class="sig-pad-wrap">
+      <canvas id="sigCanvas" class="sig-canvas"></canvas>
+      <div class="sig-placeholder" id="sigPlaceholder">Firma aquí con el dedo</div>
+    </div>
+    <div class="btn-row" style="margin-top:8px;">
+      <button type="button" class="btn btn-secondary" onclick="clearSignature()">Borrar firma</button>
+    </div>
+    <p class="muted" style="font-size:11.5px;margin-top:6px;">Si el cliente prefiere firmar en físico, deja esto en blanco — el PDF incluye una línea para firma a mano.</p>`;
+}
+
 async function onSettingsLogoChange(input){
   const file = input.files[0]; if(!file) return;
   try{
@@ -880,6 +956,8 @@ function render(){
     case 'equipmentDetail': html = viewEquipmentDetail(c.id); break;
     case 'sheetForm': html = viewSheetForm(c.equipmentId, c.id); break;
     case 'sheetDetail': html = viewSheetDetail(c.id); break;
+    case 'receptionForm': html = viewReceptionForm(c.equipmentId, c.id); break;
+    case 'receptionDetail': html = viewReceptionDetail(c.id); break;
     case 'labels': html = viewLabels(); break;
     case 'history': html = viewHistory(); break;
     case 'settings': html = viewSettings(); break;
@@ -897,6 +975,10 @@ function afterRender(c){
   if(c.view==='sheetForm'){
     renderPhotoThumbs();
     updateCostPreview();
+    initSignaturePad();
+  }
+  if(c.view==='receptionForm'){
+    initSignaturePad();
   }
 }
 
@@ -985,11 +1067,13 @@ function onGlobalSearch(q){
   list.style.display='none';
   const eqMatches = S.equipment.filter(e=> e.id.toLowerCase().includes(q) || (e.serie||'').toLowerCase().includes(q) || (e.tipo||'').toLowerCase().includes(q) || (e.marca||'').toLowerCase().includes(q) || (e.modelo||'').toLowerCase().includes(q)).slice(0,8);
   const sheetMatches = S.sheets.filter(s=> s.folio.toLowerCase().includes(q)).slice(0,5);
+  const receptionMatches = S.receptions.filter(r=> r.folio.toLowerCase().includes(q)).slice(0,5);
   const clientMatches = S.clients.filter(c=> c.name.toLowerCase().includes(q)).slice(0,8);
   let html = '';
   if(clientMatches.length){ html += `<div class="section-label">Clientes</div>` + clientMatches.map(cl=>`<div class="card" onclick="nav('clientDetail',{id:'${cl.id}'})"><div style="font-weight:600;">${esc(cl.name)}</div></div>`).join(''); }
   if(eqMatches.length){ html += `<div class="section-label">Equipos</div>` + eqMatches.map(e=>{ const cl=getClient(e.clientId); return `<div class="card" onclick="nav('equipmentDetail',{id:'${e.id}'})"><span class="id-chip">${e.id}</span> <span style="font-weight:600;">${esc(e.tipo)}</span><div class="muted" style="font-size:12px;margin-top:3px;">${esc(e.marca||'')} ${esc(e.modelo||'')} · ${esc(cl?cl.name:'')}</div></div>`; }).join(''); }
   if(sheetMatches.length){ html += `<div class="section-label">Hojas de servicio</div>` + sheetMatches.map(s=>`<div class="card" onclick="nav('sheetDetail',{id:'${s.id}'})"><span class="id-chip">${s.folio}</span> <span class="muted" style="font-size:12px;">${fmtDate(s.fecha)}</span></div>`).join(''); }
+  if(receptionMatches.length){ html += `<div class="section-label">Recepciones</div>` + receptionMatches.map(r=>`<div class="card" onclick="nav('receptionDetail',{id:'${r.id}'})"><span class="id-chip">${r.folio}</span> <span class="muted" style="font-size:12px;">${fmtDate(r.fecha)}</span></div>`).join(''); }
   if(!html) html = `<div class="empty" style="padding:24px 10px;"><p>Sin resultados para "${esc(q)}".</p></div>`;
   box.innerHTML = html;
 }
@@ -997,6 +1081,8 @@ function onGlobalSearch(q){
 /* ---- Escaneo con la cámara (QR y códigos de barras, vía ZXing) ---- */
 let zxingReader = null;
 let scannerResultCallback = null;
+let activeVideoTrack = null;
+let torchOn = false;
 async function openScanner(onResult, statusText){
   stopScanner();
   const overlay = document.getElementById('scannerOverlay');
@@ -1008,7 +1094,7 @@ async function openScanner(onResult, statusText){
   try{
     zxingReader = new ZXing.BrowserMultiFormatReader();
     await zxingReader.decodeFromConstraints(
-      { video: { facingMode: 'environment' }, audio: false },
+      { video: { facingMode: 'environment', width:{ideal:1920}, height:{ideal:1080}, advanced:[{focusMode:'continuous'}] }, audio: false },
       video,
       (result, err) => {
         if(result && scannerResultCallback){
@@ -1020,15 +1106,54 @@ async function openScanner(onResult, statusText){
         /* los errores "NotFoundException" son normales: se disparan en cada cuadro sin código detectado */
       }
     );
+    activeVideoTrack = video.srcObject ? video.srcObject.getVideoTracks()[0] : null;
+    setupScannerControls();
   }catch(e){
     statusEl.textContent = 'No se pudo abrir la cámara. Revisa los permisos de Chrome, o escribe el dato manualmente.';
   }
 }
+function setupScannerControls(){
+  const torchBtn = document.getElementById('torchBtn');
+  const zoomWrap = document.getElementById('zoomWrap');
+  const zoomSlider = document.getElementById('zoomSlider');
+  torchOn = false;
+  if(torchBtn) torchBtn.classList.remove('active');
+  if(!activeVideoTrack || !activeVideoTrack.getCapabilities){
+    if(torchBtn) torchBtn.style.display = 'none';
+    if(zoomWrap) zoomWrap.style.display = 'none';
+    return;
+  }
+  let caps = {};
+  try{ caps = activeVideoTrack.getCapabilities(); }catch(e){}
+  if(torchBtn) torchBtn.style.display = caps.torch ? 'flex' : 'none';
+  if(caps.zoom && zoomWrap && zoomSlider){
+    zoomWrap.style.display = 'flex';
+    zoomSlider.min = caps.zoom.min; zoomSlider.max = caps.zoom.max; zoomSlider.step = caps.zoom.step || 0.1;
+    let current = caps.zoom.min;
+    try{ current = activeVideoTrack.getSettings().zoom || caps.zoom.min; }catch(e){}
+    zoomSlider.value = current;
+  } else if(zoomWrap){ zoomWrap.style.display = 'none'; }
+}
+function toggleTorch(){
+  if(!activeVideoTrack) return;
+  torchOn = !torchOn;
+  activeVideoTrack.applyConstraints({advanced:[{torch:torchOn}]}).catch(()=>{ torchOn = !torchOn; });
+  const btn = document.getElementById('torchBtn');
+  if(btn) btn.classList.toggle('active', torchOn);
+}
+function onZoomChange(val){
+  if(!activeVideoTrack) return;
+  activeVideoTrack.applyConstraints({advanced:[{zoom: parseFloat(val)}]}).catch(()=>{});
+}
 function stopScanner(){
+  if(activeVideoTrack && torchOn){ try{ activeVideoTrack.applyConstraints({advanced:[{torch:false}]}); }catch(e){} }
+  activeVideoTrack = null; torchOn = false;
   if(zxingReader){ try{ zxingReader.reset(); }catch(e){} zxingReader = null; }
   scannerResultCallback = null;
   const overlay = document.getElementById('scannerOverlay');
   if(overlay) overlay.style.display = 'none';
+  const torchBtn = document.getElementById('torchBtn'); if(torchBtn){ torchBtn.style.display='none'; torchBtn.classList.remove('active'); }
+  const zoomWrap = document.getElementById('zoomWrap'); if(zoomWrap) zoomWrap.style.display='none';
 }
 function startScanner(){
   openScanner(function(text){
@@ -1042,7 +1167,7 @@ function scanIntoField(inputId){
     const input = document.getElementById(inputId);
     if(input){ input.value = text; input.focus(); }
     toast('Código leído');
-  }, 'Apunta al código de barras o QR del número de serie…');
+  }, 'Acércate ~10 cm al código de barras. Usa 🔦 si está oscuro y evita reflejos.');
 }
 
 /* ============================================================
@@ -1223,7 +1348,16 @@ function viewEquipmentDetail(id){
   if(!eq){ goHome(); return ''; }
   const cl = getClient(eq.clientId);
   const sheets = sheetsByEquipment(id);
+  const receptions = receptionsByEquipment(id);
   const inQueue = !!S.labelQueue.find(x=>x.id===id);
+  const receptionsHtml = receptions.length ? receptions.map(r=>`
+    <div class="card" onclick="nav('receptionDetail',{id:'${r.id}'})">
+      <div class="row">
+        <div><span class="id-chip">${r.folio}</span>${r.firmaCliente?`<span class="pill ok" style="margin-left:6px;">✓ Firmada</span>`:''}</div>
+        <div class="muted" style="font-size:12px;">${fmtDate(r.fecha)}</div>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:6px;">Téc. ${esc(r.tecnico)}</div>
+    </div>`).join('') : '';
   const sheetsHtml = sheets.length ? sheets.map(s=>`
     <div class="card" onclick="nav('sheetDetail',{id:'${s.id}'})">
       <div class="row">
@@ -1250,7 +1384,11 @@ function viewEquipmentDetail(id){
     <div class="btn-row">
       <button class="btn btn-primary" onclick="nav('sheetForm',{equipmentId:'${id}'})">+ Nueva hoja de servicio</button>
     </div>
+    <div class="btn-row" style="margin-top:8px;">
+      <button class="btn btn-secondary" onclick="nav('receptionForm',{equipmentId:'${id}'})">+ Nueva recepción</button>
+    </div>
     <button class="btn ${inQueue?'btn-secondary':'btn-ghost'}" style="margin-top:8px;" onclick="toggleQueueFromDetail('${id}')">${inQueue? '✓ En cola de etiquetas' : '+ Agregar a cola de etiquetas'}</button>
+    ${receptions.length? `<div class="section-label">Recepciones</div>${receptionsHtml}` : ''}
     <div class="section-label">Historial de servicios</div>
     ${sheetsHtml}
   </main>`;
@@ -1273,6 +1411,7 @@ function viewSheetForm(equipmentId, sheetId){
   const lastTecnico = S.sheets.length ? S.sheets[S.sheets.length-1].tecnico : '';
   const d = editing ? sheet : { fecha:todayISO(), tecnico:lastTecnico, tipoServicio:'preventivo', diagnostico:'', trabajoRealizado:'', refacciones:'', recomendaciones:'', proximoMantenimiento:'', estado:'completado', costo:'', requiereFactura:false, retencionIva:'sin' };
   draftPhotos = (editing && sheet.photos) ? sheet.photos.slice() : [];
+  draftSignatureDataUrl = (editing && sheet.firmaCliente) ? sheet.firmaCliente : '';
 
   const selectorHtml = (eq && cl) ? `
     <div class="card">
@@ -1344,6 +1483,7 @@ function viewSheetForm(equipmentId, sheetId){
       </label>
     </div>
     <div id="photoThumbs"></div>
+    ${signaturePadHtml()}
     <div class="btn-row" style="margin-top:14px;">
       ${editing? `<button class="btn btn-danger" onclick="deleteSheet('${sheetId}')">Eliminar</button>`:''}
       <button class="btn btn-primary" onclick="saveSheet(${editing?`'${sheetId}'`:'null'}, ${eq?`'${eq.id}'`:'null'})">Guardar y generar PDF</button>
@@ -1403,6 +1543,7 @@ async function saveSheet(sheetId, fixedEquipmentId){
     requiereFactura: document.getElementById('f_requiereFactura').checked,
     retencionIva: document.getElementById('f_retencionIva') ? document.getElementById('f_retencionIva').value : 'sin',
     photos: draftPhotos.slice(),
+    firmaCliente: getSignatureDataUrl() || draftSignatureDataUrl || '',
   };
   let sheet;
   if(sheetId){ sheet = S.sheets.find(s=>s.id===sheetId); Object.assign(sheet,data); }
@@ -1606,8 +1747,12 @@ function downloadSheetPDF(id){
     y += 6;
   }
 
-  ensureSpace(40); y += 12;
+  ensureSpace(sheet.firmaCliente ? 32 : 40);
   const lineW = (contentWidth-10)/2;
+  if(sheet.firmaCliente){
+    try{ doc.addImage(sheet.firmaCliente, 'PNG', margin+lineW+10, y, lineW, 18); }catch(e){}
+    y += 18;
+  } else { y += 12; }
   doc.setDrawColor(150);
   doc.line(margin, y, margin+lineW, y);
   doc.line(margin+lineW+10, y, margin+lineW+10+lineW, y);
@@ -1616,6 +1761,199 @@ function downloadSheetPDF(id){
   doc.text('Firma de conformidad del cliente', margin+lineW+10, y+5);
 
   const fname = (sheet.folio+'-'+(cl?cl.name:'cliente')).replace(/[^a-zA-Z0-9-]+/g,'_') + '.pdf';
+  doc.save(fname);
+}
+
+/* ============================================================
+   VISTA: RECEPCIÓN DE EQUIPOS
+   ============================================================ */
+function viewReceptionForm(equipmentId, receptionId){
+  const editing = !!receptionId;
+  const reception = editing ? S.receptions.find(r=>r.id===receptionId) : null;
+  const eqId = editing ? reception.equipmentId : equipmentId;
+  const eq = eqId ? getEquipment(eqId) : null;
+  const cl = eq ? getClient(eq.clientId) : null;
+  const lastTecnico = S.sheets.length ? S.sheets[S.sheets.length-1].tecnico : '';
+  const d = editing ? reception : { fecha:todayISO(), tecnico:lastTecnico, motivoRecepcion:'', accesorios:'', condicionFisica:'', notas:'' };
+  draftSignatureDataUrl = (editing && reception.firmaCliente) ? reception.firmaCliente : '';
+
+  const selectorHtml = (eq && cl) ? `
+    <div class="card">
+      <div class="muted" style="font-size:11px;">CLIENTE</div>
+      <div style="font-weight:600;margin-bottom:8px;">${esc(cl.name)}</div>
+      <div class="muted" style="font-size:11px;">EQUIPO</div>
+      <div style="font-weight:600;"><span class="id-chip">${eq.id}</span> ${esc(eq.tipo)} ${esc(eq.marca||'')} ${esc(eq.modelo||'')}</div>
+    </div>` : `
+    <label class="field"><span>Cliente <span class="req">*</span></span>
+      <select id="f_sel_client" onchange="updateEquipOptions()">
+        <option value="">Selecciona un cliente…</option>
+        ${S.clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}
+      </select>
+    </label>
+    <label class="field"><span>Equipo <span class="req">*</span></span>
+      <select id="f_sel_equip"><option value="">Primero elige un cliente</option></select>
+    </label>`;
+
+  return `
+  ${header(editing?'Editar recepción':'Nueva recepción de equipo')}
+  <main>
+    ${selectorHtml}
+    <div class="section-label">Datos de la recepción</div>
+    <label class="field"><span>Fecha</span><input type="date" id="f_fecha" value="${d.fecha}"></label>
+    <label class="field"><span>Técnico que recibe <span class="req">*</span></span><input id="f_tecnico" value="${esc(d.tecnico)}" placeholder="Nombre de quien recibe"></label>
+    <label class="field"><span>Motivo de la recepción / problema reportado</span><textarea id="f_motivo" placeholder="¿Qué reporta el cliente?">${esc(d.motivoRecepcion)}</textarea></label>
+    <label class="field"><span>Accesorios que incluye</span><textarea id="f_accesorios" placeholder="Ej. cargador, funda, mouse, cables…">${esc(d.accesorios)}</textarea></label>
+    <label class="field"><span>Condición física observada</span><textarea id="f_condicion" placeholder="Rayones, golpes, piezas faltantes, etc.">${esc(d.condicionFisica)}</textarea></label>
+    <label class="field"><span>Notas adicionales</span><textarea id="f_notasrecepcion" placeholder="Cualquier otro detalle relevante">${esc(d.notas)}</textarea></label>
+    ${signaturePadHtml()}
+    <div class="btn-row" style="margin-top:14px;">
+      ${editing? `<button class="btn btn-danger" onclick="deleteReception('${receptionId}')">Eliminar</button>`:''}
+      <button class="btn btn-primary" onclick="saveReception(${editing?`'${receptionId}'`:'null'}, ${eq?`'${eq.id}'`:'null'})">Guardar y generar PDF</button>
+    </div>
+  </main>`;
+}
+async function saveReception(receptionId, fixedEquipmentId){
+  let equipmentId = fixedEquipmentId;
+  if(!equipmentId){ const sel = document.getElementById('f_sel_equip'); equipmentId = sel ? sel.value : ''; }
+  if(!equipmentId){ toast('Selecciona el equipo'); return; }
+  const tecnico = document.getElementById('f_tecnico').value.trim();
+  if(!tecnico){ toast('Indica el nombre del técnico'); return; }
+  const eq = getEquipment(equipmentId);
+  const data = {
+    equipmentId, clientId: eq.clientId,
+    fecha: document.getElementById('f_fecha').value || todayISO(), tecnico,
+    motivoRecepcion: document.getElementById('f_motivo').value.trim(),
+    accesorios: document.getElementById('f_accesorios').value.trim(),
+    condicionFisica: document.getElementById('f_condicion').value.trim(),
+    notas: document.getElementById('f_notasrecepcion').value.trim(),
+    firmaCliente: getSignatureDataUrl() || draftSignatureDataUrl || '',
+  };
+  let reception;
+  if(receptionId){ reception = S.receptions.find(r=>r.id===receptionId); Object.assign(reception,data); }
+  else { const folio = genId(S.receptions,'REC','folio'); reception = {id:'RC-'+uid(), folio, createdAt:todayISO(), ...data}; S.receptions.push(reception); }
+  await persistReceptions();
+  toast('Recepción guardada');
+  navReplace('receptionDetail',{id:reception.id});
+  downloadReceptionPDF(reception.id);
+}
+async function deleteReception(id){
+  if(!confirm('¿Eliminar esta recepción?')) return;
+  const eqId = S.receptions.find(x=>x.id===id).equipmentId;
+  S.receptions = S.receptions.filter(x=>x.id!==id);
+  await persistReceptions();
+  toast('Recepción eliminada');
+  navReplace('equipmentDetail',{id:eqId});
+}
+function viewReceptionDetail(id){
+  const r = S.receptions.find(x=>x.id===id);
+  if(!r){ goHome(); return ''; }
+  const eq = getEquipment(r.equipmentId); const cl = getClient(r.clientId);
+  return `
+  ${header(r.folio, fmtDate(r.fecha), [{ic:'✎', fn:`nav('receptionForm',{equipmentId:'${r.equipmentId}', id:'${r.id}'})`}])}
+  <main>
+    <div class="ticket">
+      <div class="stub"><span class="folio">${r.folio}</span><span class="pill ${r.firmaCliente?'ok':'pend'}">${r.firmaCliente?'Firmada':'Sin firma digital'}</span></div>
+      <div class="body-p">
+        <div class="muted" style="font-size:11px;">CLIENTE</div>
+        <div style="font-weight:600;margin-bottom:8px;">${esc(cl?cl.name:'—')}</div>
+        <div class="muted" style="font-size:11px;">EQUIPO</div>
+        <div style="font-weight:600;margin-bottom:10px;"><span class="id-chip">${eq?eq.id:''}</span> ${eq?esc(eq.tipo):''} ${eq?esc(eq.marca||''):''} ${eq?esc(eq.modelo||''):''}</div>
+        <div class="muted" style="font-size:11px;">TÉCNICO QUE RECIBE</div>
+        <div style="font-weight:600;margin-bottom:10px;">${esc(r.tecnico)}</div>
+        ${sheetField('Motivo de la recepción', r.motivoRecepcion)}
+        ${sheetField('Accesorios que incluye', r.accesorios)}
+        ${sheetField('Condición física observada', r.condicionFisica)}
+        ${sheetField('Notas adicionales', r.notas)}
+        ${r.firmaCliente? `<div class="muted" style="font-size:11px;margin-top:10px;">FIRMA DEL CLIENTE</div><img src="${r.firmaCliente}" class="sig-saved-img" style="margin-top:6px;">` : `<p class="muted" style="font-size:12px;margin-top:10px;">Sin firma digital — se firmó (o se firmará) en físico sobre el PDF impreso.</p>`}
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-danger" onclick="deleteReception('${r.id}')">Eliminar</button>
+      <button class="btn btn-primary" onclick="downloadReceptionPDF('${r.id}')">⬇ Descargar PDF</button>
+    </div>
+  </main>`;
+}
+function downloadReceptionPDF(id){
+  const r = S.receptions.find(x=>x.id===id);
+  if(!r) return;
+  const eq = getEquipment(r.equipmentId);
+  const cl = getClient(r.clientId);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:'letter'});
+  const margin = 16, pageWidth=216, contentWidth=pageWidth-margin*2;
+  const blockTop = margin;
+  let textX = margin;
+  if(S.settings.logo){
+    const ratio = S.settings.logoRatio || 1;
+    const logoH = 16, logoW = Math.min(30, logoH*ratio);
+    doc.addImage(S.settings.logo, 'PNG', margin, blockTop, logoW, logoH);
+    textX = margin + logoW + 5;
+  }
+  doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(20);
+  doc.text(S.settings.empresa || 'Servicio Técnico', textX, blockTop+6);
+  let y = blockTop+11;
+  const contact = [S.settings.telefono, S.settings.email, S.settings.direccion].filter(Boolean).join('   ·   ');
+  if(contact){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(110); doc.text(contact, textX, y); y+=5; }
+  y = Math.max(y, blockTop + (S.settings.logo?20:11));
+  doc.setDrawColor(210); doc.line(margin,y,pageWidth-margin,y); y+=9;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(20);
+  doc.text('HOJA DE RECEPCIÓN DE EQUIPO', margin, y);
+  doc.setFontSize(11); doc.text(r.folio, pageWidth-margin, y, {align:'right'});
+  y+=5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(110);
+  doc.text('Fecha: '+fmtDate(r.fecha), margin, y);
+  y+=9;
+
+  function kv(x,w,label,value){
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(130);
+    doc.text(label.toUpperCase(), x, y);
+    doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(20);
+    const lines = doc.splitTextToSize(value||'—', w);
+    doc.text(lines, x, y+4.5);
+    return lines.length;
+  }
+  const colW = (contentWidth-8)/2;
+  let l1 = kv(margin, colW, 'Cliente', cl?cl.name:'—');
+  let l2 = kv(margin+colW+8, colW, 'Técnico que recibe', r.tecnico);
+  y += Math.max(l1,l2)*4.5 + 8;
+  let l3 = kv(margin, colW, 'Equipo', eq? (eq.tipo+' '+(eq.marca||'')+' '+(eq.modelo||'')) : '—');
+  let l4 = kv(margin+colW+8, colW, 'ID / N° serie', eq? (eq.id + (eq.serie?' · '+eq.serie:'')) : '—');
+  y += Math.max(l3,l4)*4.5 + 10;
+
+  doc.setDrawColor(225); doc.line(margin,y,pageWidth-margin,y); y+=8;
+  function ensureSpace(needed){ if(y+needed>272){ doc.addPage(); y=margin; } }
+  function paragraph(title, text){
+    const lines = doc.splitTextToSize(text||'—', contentWidth);
+    ensureSpace(8+lines.length*4.7);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(130);
+    doc.text(title.toUpperCase(), margin, y); y+=5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(25);
+    doc.text(lines, margin, y);
+    y += lines.length*4.7 + 7;
+  }
+  paragraph('Motivo de la recepción / problema reportado', r.motivoRecepcion);
+  paragraph('Accesorios que incluye', r.accesorios);
+  paragraph('Condición física observada', r.condicionFisica);
+  paragraph('Notas adicionales', r.notas);
+
+  ensureSpace(r.firmaCliente ? 32 : 40);
+  const lineW = (contentWidth-10)/2;
+  if(r.firmaCliente){
+    try{ doc.addImage(r.firmaCliente, 'PNG', margin+lineW+10, y, lineW, 18); }catch(e){}
+    y += 18;
+  } else { y += 12; }
+  doc.setDrawColor(150);
+  doc.line(margin, y, margin+lineW, y);
+  doc.line(margin+lineW+10, y, margin+lineW+10+lineW, y);
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(110);
+  doc.text('Firma del técnico', margin, y+5);
+  doc.text('Firma de conformidad del cliente', margin+lineW+10, y+5);
+  y += 14;
+  doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(140);
+  doc.text('Declaro que el equipo se entrega en las condiciones aquí descritas.', margin, y);
+
+  const fname = (r.folio+'-'+(cl?cl.name:'cliente')).replace(/[^a-zA-Z0-9-]+/g,'_') + '.pdf';
   doc.save(fname);
 }
 
