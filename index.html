@@ -578,7 +578,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
    ESTADO Y PERSISTENCIA
    ============================================================ */
 const S = {
-  clients: [], equipment: [], sheets: [], receptions: [],
+  clients: [], equipment: [], sheets: [], receptions: [], categories: [],
   settings: { empresa:'', telefono:'', email:'', direccion:'', logo:'', logoRatio:1, sufijoEquipo:'' },
   history: [{view:'home'}],
   labelQueue: []
@@ -648,14 +648,17 @@ async function migrateFromLocalStorageIfNeeded(){
 }
 async function loadAll(){
   await migrateFromLocalStorageIfNeeded();
-  const c = await storageGet('clients'), e = await storageGet('equipment'), s = await storageGet('sheets'), r = await storageGet('receptions'), cfg = await storageGet('settings');
+  const c = await storageGet('clients'), e = await storageGet('equipment'), s = await storageGet('sheets'), r = await storageGet('receptions'), cat = await storageGet('categories'), cfg = await storageGet('settings');
   S.clients = c || []; S.equipment = e || []; S.sheets = s || []; S.receptions = r || [];
   S.settings = cfg || { empresa:'', telefono:'', email:'', direccion:'', logo:'', logoRatio:1, sufijoEquipo:'', lastBackupAt:'' };
+  if(cat && cat.length){ S.categories = cat; }
+  else{ S.categories = DEFAULT_CATEGORIES.map(c=>({id:'CAT-'+uid(), ...c})); await persistCategories(); }
 }
 async function persistClients(){ await storageSet('clients', S.clients); }
 async function persistEquipment(){ await storageSet('equipment', S.equipment); }
 async function persistSheets(){ await storageSet('sheets', S.sheets); }
 async function persistReceptions(){ await storageSet('receptions', S.receptions); }
+async function persistCategories(){ await storageSet('categories', S.categories); }
 async function persistSettings(){ await storageSet('settings', S.settings); }
 
 function genId(list, prefix, field){
@@ -730,17 +733,28 @@ function fmtMoney(n){
 }
 
 /* ---- ID de equipo: TIPO-CLI00001-SUFIJO (ej. LAP-MAR00001-PIR) ---- */
-const TYPE_ABBR = {
-  'Computadora de escritorio':'PC','Laptop':'LAP','Impresora':'IMP','Servidor':'SRV',
-  'Switch/Router':'RED','Cámara de seguridad':'CAM','NVR/DVR':'NVR','Access Point':'AP','Otro':'EQP'
-};
+const DEFAULT_CATEGORIES = [
+  {nombre:'Computadora de escritorio', clave:'PC'},
+  {nombre:'Laptop', clave:'LAP'},
+  {nombre:'Impresora', clave:'IMP'},
+  {nombre:'Servidor', clave:'SRV'},
+  {nombre:'Switch/Router', clave:'RED'},
+  {nombre:'Cámara de seguridad', clave:'CAM'},
+  {nombre:'NVR/DVR', clave:'NVR'},
+  {nombre:'Access Point', clave:'AP'},
+  {nombre:'Otro', clave:'EQP'}
+];
+function claveForTipo(tipo){
+  const cat = S.categories.find(c=>c.nombre===tipo);
+  return cat ? cat.clave : 'EQP';
+}
 function clientLetters(clientId){
   const cl = getClient(clientId);
   const raw = ((cl&&cl.name)||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z]/g,'').toUpperCase();
   return (raw.slice(0,3) || 'CLI').padEnd(3,'X');
 }
 function generateEquipmentId(tipo, clientId){
-  const abbr = TYPE_ABBR[tipo] || 'EQP';
+  const abbr = claveForTipo(tipo);
   const base = abbr + '-' + clientLetters(clientId);
   let max = 0;
   S.equipment.forEach(e=>{
@@ -961,6 +975,8 @@ function render(){
     case 'labels': html = viewLabels(); break;
     case 'history': html = viewHistory(); break;
     case 'settings': html = viewSettings(); break;
+    case 'categories': html = viewCategories(); break;
+    case 'categoryForm': html = viewCategoryForm(c.id); break;
     default: html = viewHome();
   }
   app.innerHTML = html;
@@ -1293,14 +1309,14 @@ function exportClientExcel(clientId){
    ============================================================ */
 function viewEquipmentForm(clientId, id){
   const editing = !!id;
-  const eq = editing ? getEquipment(id) : {tipo:'Computadora de escritorio',marca:'',modelo:'',serie:'',ubicacion:'',notas:''};
+  const eq = editing ? getEquipment(id) : {tipo:(S.categories[0]?S.categories[0].nombre:''),marca:'',modelo:'',serie:'',ubicacion:'',notas:''};
   const cl = getClient(editing?eq.clientId:clientId);
-  const tipos = ['Computadora de escritorio','Laptop','Impresora','Servidor','Switch/Router','Cámara de seguridad','NVR/DVR','Access Point','Otro'];
   return `
   ${header(editing?'Editar equipo':'Nuevo equipo', cl?cl.name:'')}
   <main>
     <label class="field"><span>Tipo de equipo <span class="req">*</span></span>
-      <select id="f_tipo">${tipos.map(t=>`<option value="${t}" ${eq.tipo===t?'selected':''}>${t}</option>`).join('')}</select>
+      <select id="f_tipo">${S.categories.map(c=>`<option value="${esc(c.nombre)}" ${eq.tipo===c.nombre?'selected':''}>${esc(c.nombre)}</option>`).join('')}</select>
+      <div style="margin-top:6px;"><a href="javascript:void(0)" onclick="nav('categories')" style="font-size:11.5px;color:var(--blue);">Gestionar categorías →</a></div>
     </label>
     <label class="field"><span>Marca</span><input id="f_marca" value="${esc(eq.marca)}" placeholder="Ej. HP, Dell, Epson…"></label>
     <label class="field"><span>Modelo</span><input id="f_modelo" value="${esc(eq.modelo)}" placeholder="Ej. LaserJet Pro M404"></label>
@@ -2221,6 +2237,10 @@ function viewSettings(){
     <p class="muted" style="font-size:12px;margin-top:-6px;">Los folios de equipo se generan así: TIPO-CLI00001${s.sufijoEquipo?('-'+esc(s.sufijoEquipo)):'-SUFIJO'} (ej. LAP-MAR00001${s.sufijoEquipo?('-'+esc(s.sufijoEquipo)):'-PIR'} para una laptop de un cliente "Mar…").</p>
     <button class="btn btn-primary" onclick="saveSettingsForm()">Guardar</button>
 
+    <div class="section-label">Categorías de equipo</div>
+    <p class="muted" style="font-size:12px;margin-top:-2px;">Los tipos de equipo disponibles al dar de alta uno, y la clave que usa cada uno para generar su folio (ej. LAP, PC, SRV).</p>
+    <button class="btn btn-secondary" onclick="nav('categories')">Gestionar categorías</button>
+
     <div class="section-label">Respaldo de datos</div>
     <p class="muted" style="font-size:12px;margin-top:-2px;">Esta app guarda todo en este celular, sin internet. Si lo formateas, cambias de teléfono, o borras datos del navegador (la opción "Cookies y datos de sitios", no la de "caché"), esa información no viaja sola. A partir de 7 días sin respaldar, verás un aviso en Inicio para recordarte exportar.</p>
     <div class="btn-row">
@@ -2241,6 +2261,75 @@ async function saveSettingsForm(){
   toast('Datos guardados');
   goBack();
 }
+
+/* ============================================================
+   VISTA: CATEGORÍAS DE EQUIPO
+   ============================================================ */
+function viewCategories(){
+  const cats = S.categories.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre));
+  const rows = cats.map(c=>{
+    const enUso = S.equipment.filter(e=>e.tipo===c.nombre).length;
+    return `<div class="card" onclick="nav('categoryForm',{id:'${c.id}'})">
+      <div class="row">
+        <div>
+          <div style="font-weight:600;">${esc(c.nombre)}</div>
+          <div class="muted" style="font-size:11.5px;margin-top:2px;">${enUso} equipo${enUso===1?'':'s'} con esta categoría</div>
+        </div>
+        <span class="id-chip">${esc(c.clave)}</span>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+  ${header('Categorías de equipo', `${cats.length} categoría${cats.length===1?'':'s'}`)}
+  <main>
+    ${cats.length? rows : `<div class="empty"><p>Aún no hay categorías.</p></div>`}
+    <button class="btn btn-ghost" style="margin-top:10px;" onclick="nav('categoryForm')">+ Nueva categoría</button>
+  </main>`;
+}
+function viewCategoryForm(id){
+  const editing = !!id;
+  const cat = editing ? S.categories.find(c=>c.id===id) : {nombre:'', clave:''};
+  return `
+  ${header(editing?'Editar categoría':'Nueva categoría')}
+  <main>
+    <label class="field"><span>Nombre <span class="req">*</span></span><input id="f_cat_nombre" value="${esc(cat.nombre)}" placeholder="Ej. Tableta"></label>
+    <label class="field"><span>Clave para el folio <span class="req">*</span></span><input id="f_cat_clave" value="${esc(cat.clave)}" placeholder="Ej. TAB" maxlength="6" style="text-transform:uppercase;"></label>
+    <p class="muted" style="font-size:11.5px;margin-top:-6px;">La clave aparece en el ID del equipo, ej. ${esc(cat.clave||'TAB')}-MAR00001. Usa 2 a 6 letras, sin espacios.</p>
+    <div class="btn-row">
+      ${editing? `<button class="btn btn-danger" onclick="deleteCategory('${id}')">Eliminar</button>`:''}
+      <button class="btn btn-primary" onclick="saveCategory(${editing?`'${id}'`:'null'})">Guardar categoría</button>
+    </div>
+  </main>`;
+}
+async function saveCategory(id){
+  const nombre = document.getElementById('f_cat_nombre').value.trim();
+  const clave = document.getElementById('f_cat_clave').value.trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!nombre){ toast('El nombre de la categoría es obligatorio'); return; }
+  if(!clave || clave.length<2){ toast('La clave debe tener al menos 2 letras'); return; }
+  const dupNombre = S.categories.find(c=>c.nombre.toLowerCase()===nombre.toLowerCase() && c.id!==id);
+  if(dupNombre){ toast('Ya existe una categoría con ese nombre'); return; }
+  const dupClave = S.categories.find(c=>c.clave===clave && c.id!==id);
+  if(dupClave){ toast('Esa clave ya la usa otra categoría'); return; }
+  if(id){ const cat = S.categories.find(c=>c.id===id); Object.assign(cat, {nombre, clave}); }
+  else{ S.categories.push({id:'CAT-'+uid(), nombre, clave}); }
+  await persistCategories();
+  toast('Categoría guardada');
+  navReplace('categories');
+}
+async function deleteCategory(id){
+  const cat = S.categories.find(c=>c.id===id);
+  if(!cat) return;
+  const enUso = S.equipment.filter(e=>e.tipo===cat.nombre).length;
+  const msg = enUso>0
+    ? `${enUso} equipo${enUso===1?'':'s'} ya tiene${enUso===1?'':'n'} esta categoría asignada; no se verán afectados, pero dejará de aparecer para equipos nuevos. ¿Eliminar de todas formas?`
+    : '¿Eliminar esta categoría?';
+  if(!confirm(msg)) return;
+  S.categories = S.categories.filter(c=>c.id!==id);
+  await persistCategories();
+  toast('Categoría eliminada');
+  navReplace('categories');
+}
+
 function exportBackup(){
   const data = { clients:S.clients, equipment:S.equipment, sheets:S.sheets, settings:S.settings, exportedAt:new Date().toISOString() };
   const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
