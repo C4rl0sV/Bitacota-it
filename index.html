@@ -578,7 +578,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
    ESTADO Y PERSISTENCIA
    ============================================================ */
 const S = {
-  clients: [], equipment: [], sheets: [], receptions: [], categories: [],
+  clients: [], equipment: [], sheets: [], receptions: [], categories: [], quotes: [], importDraft: null,
   settings: { empresa:'', telefono:'', email:'', direccion:'', logo:'', logoRatio:1, sufijoEquipo:'' },
   history: [{view:'home'}],
   labelQueue: []
@@ -649,7 +649,7 @@ async function migrateFromLocalStorageIfNeeded(){
 async function loadAll(){
   await migrateFromLocalStorageIfNeeded();
   const c = await storageGet('clients'), e = await storageGet('equipment'), s = await storageGet('sheets'), r = await storageGet('receptions'), cat = await storageGet('categories'), cfg = await storageGet('settings');
-  S.clients = c || []; S.equipment = e || []; S.sheets = s || []; S.receptions = r || [];
+  S.clients = c || []; S.equipment = e || []; S.sheets = s || []; S.receptions = r || []; S.quotes = (await storageGet('quotes')) || [];
   S.settings = cfg || { empresa:'', telefono:'', email:'', direccion:'', logo:'', logoRatio:1, sufijoEquipo:'', lastBackupAt:'' };
   if(S.settings.qrEmpresa === undefined){ S.settings.qrEmpresa = DEFAULT_QR; S.settings.qrLeyenda = S.settings.qrLeyenda || 'Escanea el código QR'; await persistSettings(); }
   if(cat && cat.length){ S.categories = cat; }
@@ -660,6 +660,7 @@ async function persistEquipment(){ await storageSet('equipment', S.equipment); }
 async function persistSheets(){ await storageSet('sheets', S.sheets); }
 async function persistReceptions(){ await storageSet('receptions', S.receptions); }
 async function persistCategories(){ await storageSet('categories', S.categories); }
+async function persistQuotes(){ await storageSet('quotes', S.quotes); }
 async function persistSettings(){ await storageSet('settings', S.settings); }
 
 function genId(list, prefix, field){
@@ -755,17 +756,18 @@ function clientLetters(clientId){
   const raw = ((cl&&cl.name)||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z]/g,'').toUpperCase();
   return (raw.slice(0,3) || 'CLI').padEnd(3,'X');
 }
-function generateEquipmentId(tipo, clientId){
+function genCodeAgainst(tipo, clientId, ids){
   const abbr = claveForTipo(tipo);
   const base = abbr + '-' + clientLetters(clientId);
+  const re = new RegExp('^'+base+'(\\d{5})');
   let max = 0;
-  S.equipment.forEach(e=>{
-    const m = e.id.match(new RegExp('^'+base+'(\\d{5})'));
-    if(m) max = Math.max(max, parseInt(m[1],10));
-  });
+  ids.forEach(id=>{ const m = String(id).match(re); if(m) max = Math.max(max, parseInt(m[1],10)); });
   const seq = String(max+1).padStart(5,'0');
   const suf = (S.settings.sufijoEquipo||'').trim();
   return base + seq + (suf ? '-'+suf : '');
+}
+function generateEquipmentId(tipo, clientId){
+  return genCodeAgainst(tipo, clientId, S.equipment.map(e=>e.id));
 }
 
 /* ---- Carga y compresión de logos (empresa / cliente) ---- */
@@ -966,6 +968,7 @@ function tabbar(active){
   return `<nav class="tabbar no-print">
     <button class="${active==='home'?'active':''}" onclick="goHome()"><span class="ic">🏠</span>Inicio</button>
     <button class="${active==='history'?'active':''}" onclick="nav('history')"><span class="ic">🗂</span>Historial</button>
+    <button class="${active==='quotes'?'active':''}" onclick="nav('quotes')"><span class="ic">📝</span>Cotizar</button>
     <button class="${active==='labels'?'active':''}" onclick="nav('labels')"><span class="ic">🏷</span>Etiquetas</button>
   </nav>`;
 }
@@ -987,6 +990,10 @@ function render(){
     case 'sheetDetail': html = viewSheetDetail(c.id); break;
     case 'receptionForm': html = viewReceptionForm(c.equipmentId, c.id); break;
     case 'receptionDetail': html = viewReceptionDetail(c.id); break;
+    case 'quotes': html = viewQuotes(); break;
+    case 'quoteForm': html = viewQuoteForm(c.id, c.clientId); break;
+    case 'quoteDetail': html = viewQuoteDetail(c.id); break;
+    case 'importPreview': html = viewImportPreview(); break;
     case 'labels': html = viewLabels(); break;
     case 'history': html = viewHistory(); break;
     case 'settings': html = viewSettings(); break;
@@ -1010,6 +1017,13 @@ function afterRender(c){
   }
   if(c.view==='receptionForm'){
     initSignaturePad();
+  }
+  if(c.view==='quoteForm'){
+    renderQuoteItems();
+    updateQuoteTotals();
+  }
+  if(c.view==='importPreview'){
+    renderImportList();
   }
 }
 
@@ -1099,12 +1113,14 @@ function onGlobalSearch(q){
   const eqMatches = S.equipment.filter(e=> e.id.toLowerCase().includes(q) || (e.serie||'').toLowerCase().includes(q) || (e.tipo||'').toLowerCase().includes(q) || (e.marca||'').toLowerCase().includes(q) || (e.modelo||'').toLowerCase().includes(q)).slice(0,8);
   const sheetMatches = S.sheets.filter(s=> s.folio.toLowerCase().includes(q)).slice(0,5);
   const receptionMatches = S.receptions.filter(r=> r.folio.toLowerCase().includes(q)).slice(0,5);
+  const quoteMatches = S.quotes.filter(x=> x.folio.toLowerCase().includes(q)).slice(0,5);
   const clientMatches = S.clients.filter(c=> c.name.toLowerCase().includes(q)).slice(0,8);
   let html = '';
   if(clientMatches.length){ html += `<div class="section-label">Clientes</div>` + clientMatches.map(cl=>`<div class="card" onclick="nav('clientDetail',{id:'${cl.id}'})"><div style="font-weight:600;">${esc(cl.name)}</div></div>`).join(''); }
   if(eqMatches.length){ html += `<div class="section-label">Equipos</div>` + eqMatches.map(e=>{ const cl=getClient(e.clientId); return `<div class="card" onclick="nav('equipmentDetail',{id:'${e.id}'})"><span class="id-chip">${e.id}</span> <span style="font-weight:600;">${esc(e.tipo)}</span><div class="muted" style="font-size:12px;margin-top:3px;">${esc(e.marca||'')} ${esc(e.modelo||'')} · ${esc(cl?cl.name:'')}</div></div>`; }).join(''); }
   if(sheetMatches.length){ html += `<div class="section-label">Hojas de servicio</div>` + sheetMatches.map(s=>`<div class="card" onclick="nav('sheetDetail',{id:'${s.id}'})"><span class="id-chip">${s.folio}</span> <span class="muted" style="font-size:12px;">${fmtDate(s.fecha)}</span></div>`).join(''); }
   if(receptionMatches.length){ html += `<div class="section-label">Recepciones</div>` + receptionMatches.map(r=>`<div class="card" onclick="nav('receptionDetail',{id:'${r.id}'})"><span class="id-chip">${r.folio}</span> <span class="muted" style="font-size:12px;">${fmtDate(r.fecha)}</span></div>`).join(''); }
+  if(quoteMatches.length){ html += `<div class="section-label">Cotizaciones</div>` + quoteMatches.map(x=>`<div class="card" onclick="nav('quoteDetail',{id:'${x.id}'})"><span class="id-chip">${x.folio}</span> <span class="muted" style="font-size:12px;">${fmtDate(x.fecha)}</span></div>`).join(''); }
   if(!html) html = `<div class="empty" style="padding:24px 10px;"><p>Sin resultados para "${esc(q)}".</p></div>`;
   box.innerHTML = html;
 }
@@ -1279,6 +1295,13 @@ function viewClientDetail(id){
       ${cl.address?`<div class="row"><span class="muted" style="font-size:12px;">Dirección</span><span style="text-align:right;max-width:65%;">${esc(cl.address)}</span></div>`:''}
     </div>`:''}
     <button class="btn btn-secondary" style="margin-bottom:14px;" onclick="exportClientExcel('${id}')" ${(!eqs.length && !sheets.length)?'disabled':''}>⬇ Exportar a Excel (equipos + historial)</button>
+    <div class="btn-row" style="margin-bottom:10px;">
+      <label class="btn btn-secondary photo-upload-btn">⬆ Importar inventario
+        <input type="file" accept=".xlsx,.xls,.csv" onchange="onInventoryFile(this,'${id}')">
+      </label>
+      <button class="btn btn-secondary" onclick="downloadInventoryTemplate()">⬇ Machote Excel</button>
+    </div>
+    <button class="btn btn-ghost" style="margin-bottom:14px;" onclick="nav('quoteForm',{clientId:'${id}'})">+ Nueva cotización</button>
     <div class="section-label">Equipos</div>
     ${eqHtml}
     <button class="btn btn-ghost" style="margin-top:4px;" onclick="nav('equipmentForm',{clientId:'${id}'})">+ Agregar equipo</button>
@@ -2361,7 +2384,7 @@ async function deleteCategory(id){
 }
 
 function exportBackup(){
-  const data = { clients:S.clients, equipment:S.equipment, sheets:S.sheets, settings:S.settings, exportedAt:new Date().toISOString() };
+  const data = { clients:S.clients, equipment:S.equipment, sheets:S.sheets, receptions:S.receptions, quotes:S.quotes, categories:S.categories, settings:S.settings, exportedAt:new Date().toISOString() };
   const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2381,12 +2404,483 @@ async function importBackupFile(input){
     const data = JSON.parse(text);
     if(!data || !Array.isArray(data.clients) || !Array.isArray(data.equipment) || !Array.isArray(data.sheets)){ toast('Archivo de respaldo no válido'); input.value=''; return; }
     S.clients = data.clients; S.equipment = data.equipment; S.sheets = data.sheets;
+    S.receptions = Array.isArray(data.receptions) ? data.receptions : [];
+    S.quotes = Array.isArray(data.quotes) ? data.quotes : [];
+    if(Array.isArray(data.categories) && data.categories.length) S.categories = data.categories;
     S.settings = data.settings || S.settings;
-    await persistClients(); await persistEquipment(); await persistSheets(); await persistSettings();
+    await persistClients(); await persistEquipment(); await persistSheets(); await persistReceptions(); await persistQuotes(); await persistCategories(); await persistSettings();
     toast('Respaldo restaurado');
     goHome();
   }catch(e){ toast('No se pudo leer el archivo de respaldo'); }
   input.value='';
+}
+
+/* ============================================================
+   COTIZACIONES
+   ============================================================ */
+const DEFAULT_COND = 'Precios en pesos mexicanos (MXN). Los precios pueden cambiar después de la vigencia de esta cotización. Tiempo de entrega y forma de pago a convenir.';
+const QUOTE_ESTADO = {pendiente:'Pendiente', aceptada:'Aceptada', rechazada:'Rechazada'};
+let draftQuoteItems = [];
+function quoteEstadoPill(e){ return e==='aceptada' ? 'ok' : (e==='rechazada' ? 'corr' : 'pend'); }
+function quoteSubtotal(items){ return (items||[]).reduce((a,it)=> a + (parseFloat(it.cantidad)||0)*(parseFloat(it.precio)||0), 0); }
+function quoteBreakdown(q){ return computeCostBreakdown(quoteSubtotal(q.items), q.requiereFactura, q.retencionIva); }
+function addDaysISO(iso, n){ const d = new Date(iso+'T12:00:00'); d.setDate(d.getDate() + (parseInt(n,10)||0)); return d.toISOString().slice(0,10); }
+function quoteTotalsHtml(b){
+  let rows = `<div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">Subtotal</span><span>${fmtMoney(b.subtotal)}</span></div>`;
+  if(b.requiereFactura){
+    rows += `<div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">IVA (16%)</span><span>${fmtMoney(b.iva)}</span></div>`;
+    if(b.ivaRetenido>0) rows += `<div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">IVA retenido (2/3)</span><span>- ${fmtMoney(b.ivaRetenido)}</span></div>`;
+    rows += `<div class="row" style="margin-bottom:5px;"><span class="muted" style="font-size:12px;">ISR retenido (1.25%)</span><span>- ${fmtMoney(b.isrRetenido)}</span></div>`;
+  }
+  rows += `<div class="row" style="border-top:1px dashed var(--border);padding-top:7px;margin-top:2px;"><strong>Total${b.requiereFactura?' a cobrar':''}</strong><strong>${fmtMoney(b.total)}</strong></div>`;
+  return rows;
+}
+function viewQuotes(){
+  const list = S.quotes.slice().sort((a,b)=> b.fecha.localeCompare(a.fecha) || b.folio.localeCompare(a.folio));
+  const rows = list.map(q=>{
+    const cl = getClient(q.clientId); const b = quoteBreakdown(q); const n = (q.items||[]).length;
+    return `<div class="card" onclick="nav('quoteDetail',{id:'${q.id}'})">
+      <div class="row">
+        <div>
+          <span class="id-chip">${q.folio}</span> <span class="pill ${quoteEstadoPill(q.estado)}" style="margin-left:6px;">${QUOTE_ESTADO[q.estado]||'Pendiente'}</span>
+          <div style="font-weight:600;margin-top:6px;">${esc(cl?cl.name:'—')}</div>
+          <div class="muted" style="font-size:12px;">${fmtDate(q.fecha)} · ${n} concepto${n===1?'':'s'}</div>
+        </div>
+        <strong>${fmtMoney(b.total)}</strong>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+  <div id="brandbar"><span class="brand">Cotizaciones</span><span></span></div>
+  <main>
+    <div class="titlebig">Cotizaciones</div>
+    ${list.length ? rows : `<div class="empty"><div class="big">📝</div><p>Aún no has creado cotizaciones.</p><button class="btn btn-primary" onclick="nav('quoteForm')">+ Nueva cotización</button></div>`}
+  </main>
+  <button class="fab no-print" onclick="nav('quoteForm')">+</button>
+  ${tabbar('quotes')}`;
+}
+function viewQuoteForm(id, presetClientId){
+  const editing = !!id;
+  const q = editing ? S.quotes.find(x=>x.id===id) : null;
+  if(editing && !q){ goHome(); return ''; }
+  const d = editing ? q : { clientId: presetClientId||'', fecha: todayISO(), vigenciaDias: 15, requiereFactura:false, retencionIva:'sin', condiciones: DEFAULT_COND, estado:'pendiente' };
+  draftQuoteItems = editing ? JSON.parse(JSON.stringify(q.items||[])) : [];
+  if(!draftQuoteItems.length) draftQuoteItems = [{id:uid(), descripcion:'', cantidad:1, precio:''}];
+  const clients = S.clients.slice().sort((a,b)=>a.name.localeCompare(b.name));
+  return `
+  ${header(editing?'Editar cotización':'Nueva cotización', editing?q.folio:'')}
+  <main>
+    <label class="field"><span>Cliente <span class="req">*</span></span>
+      <select id="f_q_client"><option value="">Selecciona un cliente…</option>${clients.map(c=>`<option value="${c.id}" ${d.clientId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
+    </label>
+    <div class="row" style="gap:10px;align-items:flex-start;">
+      <label class="field" style="flex:1;"><span>Fecha</span><input type="date" id="f_q_fecha" value="${d.fecha}"></label>
+      <label class="field" style="flex:1;"><span>Vigencia (días)</span><input type="number" id="f_q_vig" min="1" value="${d.vigenciaDias||15}" inputmode="numeric"></label>
+    </div>
+    <div class="section-label">Conceptos</div>
+    <div id="quoteItems"></div>
+    <button type="button" class="btn btn-ghost" onclick="addQuoteItem()">+ Agregar concepto</button>
+    <div class="section-label">Impuestos</div>
+    <label class="field" style="display:flex;align-items:center;gap:10px;">
+      <input type="checkbox" id="f_q_factura" style="width:auto;flex:0 0 auto;" ${d.requiereFactura?'checked':''} onchange="toggleQuoteFactura(); updateQuoteTotals();">
+      <span style="margin:0;">¿Requiere factura? (agrega IVA)</span>
+    </label>
+    <div id="qFacturaFields" style="${d.requiereFactura?'':'display:none;'}">
+      <label class="field"><span>Retención de IVA (RESICO)</span>
+        <select id="f_q_ret" onchange="updateQuoteTotals()">
+          <option value="sin" ${d.retencionIva!=='con'?'selected':''}>Sin retención</option>
+          <option value="con" ${d.retencionIva==='con'?'selected':''}>Con retención (2/3 del IVA)</option>
+        </select>
+      </label>
+      <p class="muted" style="font-size:11.5px;margin-top:-6px;">Se calcula automático: IVA 16% e ISR retenido 1.25%.</p>
+    </div>
+    <div id="quoteTotals" class="card" style="margin-top:10px;"></div>
+    <label class="field"><span>Condiciones / notas</span><textarea id="f_q_cond" style="min-height:90px;">${esc(d.condiciones||'')}</textarea></label>
+    ${editing ? `<label class="field"><span>Estado</span>
+      <select id="f_q_estado">${Object.keys(QUOTE_ESTADO).map(k=>`<option value="${k}" ${q.estado===k?'selected':''}>${QUOTE_ESTADO[k]}</option>`).join('')}</select>
+    </label>` : ''}
+    <div class="btn-row" style="margin-top:14px;">
+      ${editing? `<button class="btn btn-danger" onclick="deleteQuote('${id}')">Eliminar</button>`:''}
+      <button class="btn btn-primary" onclick="saveQuote(${editing?`'${id}'`:'null'})">Guardar y generar PDF</button>
+    </div>
+  </main>`;
+}
+function renderQuoteItems(){
+  const box = document.getElementById('quoteItems'); if(!box) return;
+  box.innerHTML = draftQuoteItems.map(it=>`
+    <div class="card" style="padding:10px;">
+      <div class="row" style="gap:8px;margin-bottom:8px;">
+        <input placeholder="Descripción del concepto" value="${esc(it.descripcion)}" oninput="setQuoteItem('${it.id}','descripcion',this.value)">
+        <button type="button" class="btn btn-danger" style="width:auto;padding:9px 12px;flex:0 0 auto;" onclick="removeQuoteItem('${it.id}')">✕</button>
+      </div>
+      <div class="row" style="gap:8px;align-items:flex-end;">
+        <div style="flex:1;"><div class="muted" style="font-size:11px;margin-bottom:3px;">Cantidad</div><input type="number" min="0" step="any" inputmode="decimal" value="${it.cantidad}" oninput="setQuoteItem('${it.id}','cantidad',this.value)"></div>
+        <div style="flex:1.2;"><div class="muted" style="font-size:11px;margin-bottom:3px;">Precio unitario</div><input type="number" min="0" step="0.01" inputmode="decimal" value="${it.precio}" placeholder="0.00" oninput="setQuoteItem('${it.id}','precio',this.value)"></div>
+        <div style="flex:1;text-align:right;"><div class="muted" style="font-size:11px;margin-bottom:3px;">Importe</div><strong id="qi-${it.id}">${fmtMoney((parseFloat(it.cantidad)||0)*(parseFloat(it.precio)||0))}</strong></div>
+      </div>
+    </div>`).join('');
+}
+function addQuoteItem(){ draftQuoteItems.push({id:uid(), descripcion:'', cantidad:1, precio:''}); renderQuoteItems(); updateQuoteTotals(); }
+function removeQuoteItem(id){
+  draftQuoteItems = draftQuoteItems.filter(x=>x.id!==id);
+  if(!draftQuoteItems.length) draftQuoteItems = [{id:uid(), descripcion:'', cantidad:1, precio:''}];
+  renderQuoteItems(); updateQuoteTotals();
+}
+function setQuoteItem(id, field, val){
+  const it = draftQuoteItems.find(x=>x.id===id); if(!it) return;
+  it[field] = (field==='descripcion') ? val : (parseFloat(val)||0);
+  const el = document.getElementById('qi-'+id);
+  if(el) el.textContent = fmtMoney((parseFloat(it.cantidad)||0)*(parseFloat(it.precio)||0));
+  updateQuoteTotals();
+}
+function toggleQuoteFactura(){
+  const box = document.getElementById('qFacturaFields');
+  const on = document.getElementById('f_q_factura').checked;
+  if(box) box.style.display = on ? 'block' : 'none';
+}
+function updateQuoteTotals(){
+  const box = document.getElementById('quoteTotals'); if(!box) return;
+  const factura = document.getElementById('f_q_factura');
+  const ret = document.getElementById('f_q_ret');
+  const b = computeCostBreakdown(quoteSubtotal(draftQuoteItems), factura && factura.checked, ret ? ret.value : 'sin');
+  box.innerHTML = quoteTotalsHtml(b);
+}
+async function saveQuote(id){
+  const clientId = document.getElementById('f_q_client').value;
+  if(!clientId){ toast('Selecciona el cliente'); return; }
+  const items = draftQuoteItems
+    .filter(it=> (it.descripcion||'').trim() || (parseFloat(it.precio)||0)>0)
+    .map(it=>({id:it.id, descripcion:(it.descripcion||'').trim(), cantidad:parseFloat(it.cantidad)||0, precio:parseFloat(it.precio)||0}));
+  if(!items.length){ toast('Agrega al menos un concepto'); return; }
+  const estadoEl = document.getElementById('f_q_estado');
+  const retEl = document.getElementById('f_q_ret');
+  const data = {
+    clientId, items,
+    fecha: document.getElementById('f_q_fecha').value || todayISO(),
+    vigenciaDias: Math.max(1, parseInt(document.getElementById('f_q_vig').value,10) || 15),
+    requiereFactura: document.getElementById('f_q_factura').checked,
+    retencionIva: retEl ? retEl.value : 'sin',
+    condiciones: document.getElementById('f_q_cond').value.trim(),
+    estado: estadoEl ? estadoEl.value : 'pendiente',
+  };
+  let q;
+  if(id){ q = S.quotes.find(x=>x.id===id); Object.assign(q, data); }
+  else { q = {id:'QT-'+uid(), folio: genId(S.quotes,'COT','folio'), createdAt: todayISO(), ...data}; S.quotes.push(q); }
+  await persistQuotes();
+  draftQuoteItems = [];
+  toast('Cotización guardada');
+  navReplace('quoteDetail',{id:q.id});
+  downloadQuotePDF(q.id);
+}
+async function deleteQuote(id){
+  if(!confirm('¿Eliminar esta cotización?')) return;
+  S.quotes = S.quotes.filter(x=>x.id!==id);
+  await persistQuotes();
+  toast('Cotización eliminada');
+  navReplace('quotes');
+}
+async function setQuoteEstado(id, val){
+  const q = S.quotes.find(x=>x.id===id); if(!q) return;
+  q.estado = val; await persistQuotes(); render(); toast('Estado actualizado');
+}
+function viewQuoteDetail(id){
+  const q = S.quotes.find(x=>x.id===id);
+  if(!q){ goHome(); return ''; }
+  const cl = getClient(q.clientId); const b = quoteBreakdown(q);
+  const items = (q.items||[]).map(it=>`
+    <div class="row" style="align-items:flex-start;margin-bottom:10px;">
+      <div style="flex:1;"><div style="font-size:13.5px;line-height:1.35;">${esc(it.descripcion||'—')}</div>
+        <div class="muted" style="font-size:11.5px;">${Number(it.cantidad)||0} × ${fmtMoney(it.precio)}</div></div>
+      <strong style="flex:0 0 auto;">${fmtMoney((it.cantidad||0)*(it.precio||0))}</strong>
+    </div>`).join('');
+  return `
+  ${header(q.folio, fmtDate(q.fecha), [{ic:'✎', fn:`nav('quoteForm',{id:'${q.id}'})`}])}
+  <main>
+    <div class="ticket">
+      <div class="stub"><span class="folio">${q.folio}</span><span class="pill ${quoteEstadoPill(q.estado)}">${QUOTE_ESTADO[q.estado]||'Pendiente'}</span></div>
+      <div class="body-p">
+        <div class="muted" style="font-size:11px;">CLIENTE</div>
+        <div style="font-weight:600;margin-bottom:8px;">${esc(cl?cl.name:'—')}</div>
+        <div class="muted" style="font-size:11px;">VIGENCIA</div>
+        <div style="margin-bottom:12px;">Hasta el ${fmtDate(addDaysISO(q.fecha, q.vigenciaDias))} <span class="muted">(${q.vigenciaDias} días)</span></div>
+        <div class="muted" style="font-size:11px;margin-bottom:8px;">CONCEPTOS</div>
+        ${items}
+        <div class="card" style="margin:12px 0 0 0;">${quoteTotalsHtml(b)}</div>
+        ${q.condiciones ? sheetField('Condiciones / notas', q.condiciones) : ''}
+      </div>
+    </div>
+    <label class="field"><span>Estado de la cotización</span>
+      <select onchange="setQuoteEstado('${q.id}', this.value)">${Object.keys(QUOTE_ESTADO).map(k=>`<option value="${k}" ${q.estado===k?'selected':''}>${QUOTE_ESTADO[k]}</option>`).join('')}</select>
+    </label>
+    <div class="btn-row">
+      <button class="btn btn-danger" onclick="deleteQuote('${q.id}')">Eliminar</button>
+      <button class="btn btn-primary" onclick="downloadQuotePDF('${q.id}')">⬇ Descargar PDF</button>
+    </div>
+  </main>`;
+}
+function downloadQuotePDF(id){
+  const q = S.quotes.find(x=>x.id===id); if(!q) return;
+  const cl = getClient(q.clientId); const b = quoteBreakdown(q);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:'letter'});
+  const margin = 16, pageWidth = 216, contentWidth = pageWidth - margin*2;
+  let y = drawPdfHeader(doc, margin, pageWidth);
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(20);
+  doc.text('COTIZACIÓN', margin, y);
+  doc.setFontSize(11); doc.text(q.folio, pageWidth-margin, y, {align:'right'});
+  y += 5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(110);
+  doc.text('Fecha: '+fmtDate(q.fecha)+'   ·   Vigencia: hasta el '+fmtDate(addDaysISO(q.fecha, q.vigenciaDias)), margin, y);
+  y += 9;
+
+  function kv(x,w,label,value){
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(130);
+    doc.text(label.toUpperCase(), x, y);
+    doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(20);
+    const lines = doc.splitTextToSize(value||'—', w);
+    doc.text(lines, x, y+4.5);
+    return lines.length;
+  }
+  const colW = (contentWidth-8)/2;
+  const l1 = kv(margin, colW, 'Cliente', cl?cl.name:'—');
+  const l2 = kv(margin+colW+8, colW, 'Contacto', cl ? ([cl.phone, cl.email].filter(Boolean).join('  ·  ')||'—') : '—');
+  y += Math.max(l1,l2)*4.5 + 8;
+  if(cl && cl.address){ const l3 = kv(margin, contentWidth, 'Dirección', cl.address); y += l3*4.5 + 8; }
+  doc.setDrawColor(225); doc.line(margin, y, pageWidth-margin, y); y += 8;
+
+  function ensureSpace(n){ if(y+n > 268){ doc.addPage(); y = margin; return true; } return false; }
+  const xCant = margin+122, xPrecio = margin+152, xImp = margin+contentWidth, descW = 112;
+  function tableHeader(){
+    doc.setFillColor(238,241,245); doc.rect(margin, y-4.8, contentWidth, 7.2, 'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(70);
+    doc.text('DESCRIPCIÓN', margin+2, y);
+    doc.text('CANT.', xCant, y, {align:'right'});
+    doc.text('P. UNIT.', xPrecio, y, {align:'right'});
+    doc.text('IMPORTE', xImp-2, y, {align:'right'});
+    y += 7;
+  }
+  tableHeader();
+  (q.items||[]).forEach(it=>{
+    const lines = doc.splitTextToSize(it.descripcion||'—', descW-4);
+    const rowH = Math.max(1, lines.length)*4.6 + 3;
+    if(ensureSpace(rowH+4)) tableHeader();
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(25);
+    doc.text(lines, margin+2, y);
+    doc.text(String(Number(it.cantidad)||0), xCant, y, {align:'right'});
+    doc.text(fmtMoney(it.precio), xPrecio, y, {align:'right'});
+    doc.text(fmtMoney((it.cantidad||0)*(it.precio||0)), xImp-2, y, {align:'right'});
+    y += rowH;
+    doc.setDrawColor(236); doc.line(margin, y-3.6, margin+contentWidth, y-3.6);
+  });
+
+  ensureSpace(36); y += 3;
+  const labelX = margin+112;
+  function totalLine(label, value, bold){
+    doc.setFont('helvetica', bold?'bold':'normal'); doc.setFontSize(bold?11:9.5); doc.setTextColor(bold?20:70);
+    doc.text(label, labelX, y);
+    doc.text(value, xImp-2, y, {align:'right'});
+    y += bold ? 6 : 5.2;
+  }
+  totalLine('Subtotal', fmtMoney(b.subtotal));
+  if(b.requiereFactura){
+    totalLine('IVA (16%)', fmtMoney(b.iva));
+    if(b.ivaRetenido>0) totalLine('IVA retenido (2/3)', '- '+fmtMoney(b.ivaRetenido));
+    totalLine('ISR retenido (1.25%)', '- '+fmtMoney(b.isrRetenido));
+  }
+  doc.setDrawColor(190); doc.line(labelX, y-2.6, xImp-2, y-2.6); y += 1.2;
+  totalLine('Total'+(b.requiereFactura?' a cobrar':''), fmtMoney(b.total), true);
+  y += 5;
+
+  if(q.condiciones){
+    const lines = doc.splitTextToSize(q.condiciones, contentWidth);
+    ensureSpace(10+lines.length*4.4);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(130);
+    doc.text('CONDICIONES / NOTAS', margin, y); y += 5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(60);
+    doc.text(lines, margin, y); y += lines.length*4.4 + 6;
+  }
+
+  ensureSpace(34); y += 16;
+  const lineW = (contentWidth-10)/2;
+  doc.setDrawColor(150);
+  doc.line(margin, y, margin+lineW, y);
+  doc.line(margin+lineW+10, y, margin+lineW+10+lineW, y);
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(110);
+  doc.text('Atentamente', margin, y+5);
+  doc.text('Aceptación del cliente (nombre y firma)', margin+lineW+10, y+5);
+
+  const fname = (q.folio+'-'+(cl?cl.name:'cliente')).replace(/[^a-zA-Z0-9-]+/g,'_') + '.pdf';
+  doc.save(fname);
+}
+
+/* ============================================================
+   IMPORTAR INVENTARIO DESDE EXCEL
+   ============================================================ */
+const INV_COLS = {
+  tipo: ['tipo','tipo de equipo','tipo equipo','categoria','equipo'],
+  marca: ['marca','fabricante'],
+  modelo: ['modelo'],
+  serie: ['serie','n de serie','no de serie','n serie','no serie','numero de serie','numero serie','num serie','s n','sn'],
+  ubicacion: ['ubicacion','area','departamento','lugar'],
+  notas: ['notas','nota','observaciones','comentarios']
+};
+function normKey(s){ return String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
+function mapInvHeader(h){
+  const k = normKey(h);
+  for(const f in INV_COLS){ if(INV_COLS[f].includes(k)) return f; }
+  return null;
+}
+function matchCategoriaNombre(val, cats){
+  const n = normKey(val); if(!n) return '';
+  let c = cats.find(x=> normKey(x.nombre)===n || normKey(x.clave)===n);
+  if(c) return c.nombre;
+  const alias = {notebook:'laptop', portatil:'laptop', 'laptop portatil':'laptop', cpu:'computadora de escritorio', desktop:'computadora de escritorio', 'pc de escritorio':'computadora de escritorio'};
+  if(alias[n]){ c = cats.find(x=> normKey(x.nombre)===alias[n]); if(c) return c.nombre; }
+  if(n.length>=3){
+    c = cats.find(x=>{ const nn = normKey(x.nombre); return nn.includes(n) || (nn.length>=4 && n.includes(nn)); });
+    if(c) return c.nombre;
+  }
+  return '';
+}
+function parseInventoryRows(raw, cats, existingSeries){
+  const seen = new Set((existingSeries||[]).map(s=>String(s).trim().toLowerCase()).filter(Boolean));
+  const rows = []; let recognized = false;
+  raw.forEach(r=>{
+    const rec = {id:uid(), tipoRaw:'', marca:'', modelo:'', serie:'', ubicacion:'', notas:''};
+    let any = false;
+    Object.keys(r).forEach(k=>{
+      const f = mapInvHeader(k); if(!f) return;
+      recognized = true;
+      const v = String(r[k]==null?'':r[k]).trim();
+      if(f==='tipo') rec.tipoRaw = v; else rec[f] = v;
+      if(v) any = true;
+    });
+    if(!any) return;
+    rec.tipo = matchCategoriaNombre(rec.tipoRaw, cats);
+    rec.autoTipo = !!rec.tipo;
+    const key = rec.serie.toLowerCase();
+    if(key && seen.has(key)){ rec.dup = true; rec.skip = true; } else if(key){ seen.add(key); }
+    rows.push(rec);
+  });
+  return {rows, recognized};
+}
+function downloadInventoryTemplate(){
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    ['Tipo de equipo','Marca','Modelo','N° de serie','Ubicación','Notas'],
+    ['Laptop','HP','ProBook 450 G8','5CD1234ABC','Contabilidad',''],
+    ['Impresora','Epson','L3250','','Recepción','Ejemplo: borra estas filas y captura las tuyas']
+  ]);
+  ws['!cols'] = [{wch:26},{wch:16},{wch:22},{wch:20},{wch:20},{wch:36}];
+  const wsCat = XLSX.utils.aoa_to_sheet([['Categorías válidas (columna "Tipo de equipo")','Clave'], ...S.categories.map(c=>[c.nombre, c.clave])]);
+  wsCat['!cols'] = [{wch:46},{wch:10}];
+  XLSX.utils.book_append_sheet(wb, ws, 'Inventario');
+  XLSX.utils.book_append_sheet(wb, wsCat, 'Categorías');
+  XLSX.writeFile(wb, 'Machote inventario.xlsx');
+  toast('Machote descargado');
+}
+async function onInventoryFile(input, clientId){
+  const file = input.files[0]; if(!file) return;
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array'});
+    let name = wb.SheetNames.find(n=>normKey(n)==='inventario') || wb.SheetNames.find(n=>normKey(n)!=='categorias') || wb.SheetNames[0];
+    const raw = XLSX.utils.sheet_to_json(wb.Sheets[name], {defval:'', raw:false});
+    const existing = S.equipment.filter(e=>e.clientId===clientId).map(e=>e.serie);
+    const {rows, recognized} = parseInventoryRows(raw, S.categories, existing);
+    if(!recognized){ toast('No encontré las columnas. Usa el machote (Tipo de equipo, Marca, Modelo, N° de serie…)'); input.value=''; return; }
+    if(!rows.length){ toast('El archivo no tiene filas con datos'); input.value=''; return; }
+    S.importDraft = {clientId, fileName:file.name, rows, addToQueue:true};
+    input.value = '';
+    nav('importPreview',{clientId});
+  }catch(e){ console.error(e); toast('No se pudo leer el archivo de Excel'); input.value=''; }
+}
+function recomputeImportCodes(){
+  const d = S.importDraft; if(!d) return;
+  const ids = S.equipment.map(e=>e.id);
+  d.rows.forEach(r=>{
+    if(r.skip || !r.tipo){ r.code = ''; return; }
+    r.code = genCodeAgainst(r.tipo, d.clientId, ids);
+    ids.push(r.code);
+  });
+}
+function viewImportPreview(){
+  const d = S.importDraft;
+  if(!d){ goHome(); return ''; }
+  const cl = getClient(d.clientId);
+  return `
+  ${header('Importar inventario', cl?cl.name:'')}
+  <main>
+    <div class="card" id="importSummary"></div>
+    <label class="field" style="display:flex;align-items:center;gap:10px;">
+      <input type="checkbox" style="width:auto;flex:0 0 auto;" ${d.addToQueue?'checked':''} onchange="S.importDraft.addToQueue=this.checked">
+      <span style="margin:0;">Agregar los equipos importados a la cola de etiquetas</span>
+    </label>
+    <div id="importList"></div>
+    <button id="btnConfirmImport" class="btn btn-primary" style="margin-top:6px;" onclick="confirmImport()">Importar</button>
+  </main>`;
+}
+function renderImportList(){
+  const d = S.importDraft; if(!d) return;
+  recomputeImportCodes();
+  const list = document.getElementById('importList');
+  const sum = document.getElementById('importSummary');
+  const btn = document.getElementById('btnConfirmImport');
+  if(!list) return;
+  const ready = d.rows.filter(r=>!r.skip && r.tipo).length;
+  const noCat = d.rows.filter(r=>!r.skip && !r.tipo).length;
+  const dups = d.rows.filter(r=>r.dup).length;
+  if(sum) sum.innerHTML = `
+    <div style="font-weight:600;margin-bottom:4px;">${esc(d.fileName)}</div>
+    <div class="muted" style="font-size:12.5px;line-height:1.5;">${d.rows.length} fila${d.rows.length===1?'':'s'} leída${d.rows.length===1?'':'s'} ·
+      <span style="color:var(--ok);">${ready} se importarán</span>
+      ${noCat?` · <span style="color:var(--warn);">${noCat} sin categoría (elige una)</span>`:''}
+      ${dups?` · <span style="color:var(--danger);">${dups} con serie repetida</span>`:''}</div>`;
+  if(btn){ btn.disabled = ready===0; btn.textContent = ready ? `Importar ${ready} equipo${ready===1?'':'s'}` : 'Nada que importar'; }
+  list.innerHTML = d.rows.map(r=>`
+    <div class="card" style="padding:12px;${r.skip?'opacity:.55;':''}">
+      <div class="row" style="gap:8px;">
+        <select onchange="setImportTipo('${r.id}', this.value)" style="flex:1;">
+          <option value="">— elegir categoría —</option>
+          ${S.categories.map(c=>`<option value="${esc(c.nombre)}" ${r.tipo===c.nombre?'selected':''}>${esc(c.nombre)}</option>`).join('')}
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);flex:0 0 auto;">
+          <input type="checkbox" style="width:auto;" ${r.skip?'checked':''} onchange="setImportSkip('${r.id}', this.checked)">Omitir
+        </label>
+      </div>
+      <div style="margin-top:8px;">
+        ${r.code ? `<span class="id-chip">${esc(r.code)}</span>` : (r.skip ? '' : `<span class="pill pend">Sin código</span>`)}
+        ${r.dup ? `<span class="pill corr" style="margin-left:6px;">Serie repetida</span>` : ''}
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:6px;">${esc([r.marca, r.modelo].filter(Boolean).join(' ') || '—')}${r.serie?' · S/N '+esc(r.serie):''}${r.ubicacion?' · '+esc(r.ubicacion):''}</div>
+      ${(!r.autoTipo && r.tipoRaw) ? `<div class="muted" style="font-size:11.5px;margin-top:4px;">El Excel decía: “${esc(r.tipoRaw)}”</div>` : ''}
+    </div>`).join('');
+}
+function setImportTipo(rowId, val){
+  const r = S.importDraft && S.importDraft.rows.find(x=>x.id===rowId); if(!r) return;
+  r.tipo = val; renderImportList();
+}
+function setImportSkip(rowId, checked){
+  const r = S.importDraft && S.importDraft.rows.find(x=>x.id===rowId); if(!r) return;
+  r.skip = checked; renderImportList();
+}
+async function confirmImport(){
+  const d = S.importDraft; if(!d) return;
+  const ready = d.rows.filter(r=>!r.skip && r.tipo);
+  if(!ready.length){ toast('No hay equipos para importar'); return; }
+  const newIds = [];
+  ready.forEach(r=>{
+    const id = generateEquipmentId(r.tipo, d.clientId);
+    S.equipment.push({id, createdAt:todayISO(), tipo:r.tipo, clientId:d.clientId, marca:r.marca, modelo:r.modelo, serie:r.serie, ubicacion:r.ubicacion, notas:r.notas});
+    newIds.push(id);
+  });
+  await persistEquipment();
+  if(d.addToQueue){ newIds.forEach(id=>{ if(!S.labelQueue.find(x=>x.id===id)) S.labelQueue.push({id, qty:1}); }); }
+  const cid = d.clientId;
+  S.importDraft = null;
+  toast(newIds.length+' equipo'+(newIds.length===1?'':'s')+' importado'+(newIds.length===1?'':'s')+(d.addToQueue?' · ya están en Etiquetas':''));
+  navReplace('clientDetail',{id:cid});
 }
 
 /* ============================================================
