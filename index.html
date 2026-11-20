@@ -651,6 +651,7 @@ async function loadAll(){
   const c = await storageGet('clients'), e = await storageGet('equipment'), s = await storageGet('sheets'), r = await storageGet('receptions'), cat = await storageGet('categories'), cfg = await storageGet('settings');
   S.clients = c || []; S.equipment = e || []; S.sheets = s || []; S.receptions = r || []; S.quotes = (await storageGet('quotes')) || [];
   S.settings = cfg || { empresa:'', telefono:'', email:'', direccion:'', logo:'', logoRatio:1, sufijoEquipo:'', lastBackupAt:'' };
+  await ensureClientClaves();
   if(S.settings.qrEmpresa === undefined){ S.settings.qrEmpresa = DEFAULT_QR; S.settings.qrLeyenda = S.settings.qrLeyenda || 'Escanea el código QR'; await persistSettings(); }
   if(cat && cat.length){ S.categories = cat; }
   else{ S.categories = DEFAULT_CATEGORIES.map(c=>({id:'CAT-'+uid(), ...c})); await persistCategories(); }
@@ -751,15 +752,51 @@ function claveForTipo(tipo){
   const cat = S.categories.find(c=>c.nombre===tipo);
   return cat ? cat.clave : 'EQP';
 }
-function clientLetters(clientId){
-  const cl = getClient(clientId);
-  const raw = ((cl&&cl.name)||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z]/g,'').toUpperCase();
-  return (raw.slice(0,3) || 'CLI').padEnd(3,'X');
+const CLAVE_STOP = new Set(['de','del','la','las','los','el','y','e','en','al','a','para','con','sa','cv','sapi','spr','rl','sc','ac','sas','srl','rs']);
+function nameWords(name){
+  return String(name||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().split(/[^a-z]+/).filter(Boolean);
 }
+function legacyClave(name){
+  return (nameWords(name).join('').slice(0,3).toUpperCase() || 'CLI').padEnd(3,'X');
+}
+function suggestClave(name, taken){
+  const words = nameWords(name).filter(w=>!CLAVE_STOP.has(w));
+  let base;
+  if(words.length<=1) base = (words[0]||'cli').slice(0,3);
+  else base = words.slice(0,4).map(w=>w[0]).join('');
+  base = base.toUpperCase().padEnd(3,'X');
+  if(!taken.has(base)) return base;
+  for(const L of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'){
+    const cand = base.slice(0,4)+L;
+    if(!taken.has(cand)) return cand;
+  }
+  return base;
+}
+function validateClave(k, clientId){
+  if(!k || k.length<2 || k.length>5) return 'La clave debe tener de 2 a 5 letras';
+  if(S.clients.some(c=>c.id!==clientId && (c.clave||'')===k)) return 'Esa clave ya la usa otro cliente';
+  return '';
+}
+function clientClave(clientId){
+  const cl = getClient(clientId);
+  return (cl && cl.clave) ? cl.clave : legacyClave(cl ? cl.name : '');
+}
+async function ensureClientClaves(){
+  const taken = new Set(S.clients.filter(c=>c.clave).map(c=>c.clave));
+  let changed = false;
+  S.clients.forEach(c=>{
+    if(c.clave) return;
+    let k = legacyClave(c.name);
+    if(taken.has(k)) k = suggestClave(c.name, taken);
+    taken.add(k); c.clave = k; changed = true;
+  });
+  if(changed) await persistClients();
+}
+function clientLetters(clientId){ return clientClave(clientId); }
 function genCodeAgainst(tipo, clientId, ids){
   const abbr = claveForTipo(tipo);
   const base = abbr + '-' + clientLetters(clientId);
-  const re = new RegExp('^'+base+'(\\d{5})');
+  const re = new RegExp('^'+base+'(\\d{5})(?:-|$)');
   let max = 0;
   ids.forEach(id=>{ const m = String(id).match(re); if(m) max = Math.max(max, parseInt(m[1],10)); });
   const seq = String(max+1).padStart(5,'0');
@@ -1222,11 +1259,16 @@ function scanIntoField(inputId){
    ============================================================ */
 function viewClientForm(id){
   const editing = !!id;
-  const cl = editing ? getClient(id) : {name:'',phone:'',email:'',address:'',notes:''};
+  const cl = editing ? getClient(id) : {name:'',phone:'',email:'',address:'',notes:'',clave:''};
+  const nEq = editing ? equipmentByClient(id).length : 0;
   return `
   ${header(editing?'Editar cliente':'Nuevo cliente')}
   <main>
-    <label class="field"><span>Nombre / Razón social <span class="req">*</span></span><input id="f_name" value="${esc(cl.name)}" placeholder="Ej. Farmacia San José"></label>
+    <label class="field"><span>Nombre / Razón social <span class="req">*</span></span><input id="f_name" value="${esc(cl.name)}" placeholder="Ej. Farmacia San José" oninput="onClientNameInput()"></label>
+    <label class="field"><span>Clave para folios de equipo <span class="req">*</span></span>
+      <input id="f_clave" value="${esc(cl.clave||'')}" maxlength="5" placeholder="Se sugiere al escribir el nombre" style="text-transform:uppercase;" ${editing?'data-locked="1"':''} oninput="onClaveInput(this)">
+    </label>
+    <p class="muted" style="font-size:11.5px;margin-top:-6px;">Va en el folio de cada equipo, ej. IMP-<b>${esc(cl.clave||'BPJ')}</b>00001. Debe ser distinta para cada cliente (2 a 5 letras).</p>
     <label class="field"><span>Teléfono</span><input id="f_phone" value="${esc(cl.phone)}" placeholder="55 1234 5678" inputmode="tel"></label>
     <label class="field"><span>Correo</span><input id="f_email" value="${esc(cl.email)}" placeholder="contacto@cliente.com" inputmode="email"></label>
     <label class="field"><span>Dirección</span><textarea id="f_address" placeholder="Calle, número, colonia, ciudad">${esc(cl.address)}</textarea></label>
@@ -1236,20 +1278,71 @@ function viewClientForm(id){
       ${cl.logo?`<div class="row" style="margin-bottom:8px;"><img src="${cl.logo}" style="height:44px;object-fit:contain;background:#fff;border-radius:8px;padding:4px;"><button type="button" class="btn btn-danger" style="width:auto;padding:8px 12px;" onclick="removeClientLogo('${id}')">Quitar</button></div>`:''}
       <input type="file" accept="image/*" onchange="onClientLogoChange(this,'${id}')">
     </label>` : `<p class="muted" style="font-size:12px;margin:-6px 0 14px 0;">Guarda el cliente primero para poder agregarle un logo.</p>`}
+    ${nEq ? `<div class="section-label">Folios de sus equipos</div>
+    <p class="muted" style="font-size:12px;margin-top:-2px;">Al cambiar la clave, los ${nEq} equipo${nEq===1?'':'s'} que ya tiene conserv${nEq===1?'a':'an'} su folio actual. Si quieres que usen la clave nueva, reasígnalos (las etiquetas ya impresas habría que reimprimirlas).</p>
+    <button class="btn btn-secondary" style="margin-bottom:14px;" onclick="reassignClientCodes('${id}')">Reasignar folios con esta clave</button>` : ''}
     <div class="btn-row">
       ${editing? `<button class="btn btn-danger" onclick="deleteClient('${id}')">Eliminar</button>`:''}
       <button class="btn btn-primary" onclick="saveClient(${editing?`'${id}'`:'null'})">Guardar cliente</button>
     </div>
   </main>`;
 }
+function onClaveInput(el){
+  el.dataset.touched = '1';
+  el.value = el.value.toUpperCase().replace(/[^A-Z]/g,'');
+}
+function onClientNameInput(){
+  const k = document.getElementById('f_clave');
+  if(!k || k.dataset.touched || k.dataset.locked) return;
+  const taken = new Set(S.clients.map(c=>c.clave).filter(Boolean));
+  k.value = suggestClave(document.getElementById('f_name').value, taken);
+}
+function planReassign(clientId){
+  const cl = getClient(clientId); if(!cl) return [];
+  const toChange = S.equipment.filter(e=>e.clientId===clientId).filter(e=>{
+    const prefix = claveForTipo(e.tipo)+'-'+cl.clave;
+    return !new RegExp('^'+prefix+'\\d{5}(?:-|$)').test(e.id);
+  });
+  const changing = new Set(toChange.map(e=>e.id));
+  const ids = S.equipment.filter(e=>!changing.has(e.id)).map(e=>e.id);
+  return toChange.map(e=>{ const nuevo = genCodeAgainst(e.tipo, clientId, ids); ids.push(nuevo); return {eq:e, viejo:e.id, nuevo}; });
+}
+async function reassignClientCodes(clientId){
+  const cl = getClient(clientId); if(!cl) return;
+  const input = document.getElementById('f_clave');
+  if(input){
+    const k = input.value.trim().toUpperCase().replace(/[^A-Z]/g,'');
+    const err = validateClave(k, clientId);
+    if(err){ toast(err); return; }
+    if(k !== cl.clave){ cl.clave = k; await persistClients(); }
+  }
+  const plan = planReassign(clientId);
+  if(!plan.length){ toast('Todos sus folios ya usan la clave '+cl.clave); return; }
+  const preview = plan.slice(0,6).map(p=>p.viejo+'  →  '+p.nuevo).join('\n') + (plan.length>6 ? '\n… y '+(plan.length-6)+' más' : '');
+  if(!confirm('Se cambiarán '+plan.length+' folio'+(plan.length===1?'':'s')+':\n\n'+preview+'\n\nLas etiquetas ya impresas de estos equipos dejarán de coincidir y habrá que reimprimirlas. Su historial y hojas se conservan. ¿Continuar?')) return;
+  plan.forEach(p=>{
+    S.sheets.forEach(s=>{ if(s.equipmentId===p.viejo) s.equipmentId = p.nuevo; });
+    S.receptions.forEach(r=>{ if(r.equipmentId===p.viejo) r.equipmentId = p.nuevo; });
+    S.labelQueue.forEach(x=>{ if(x.id===p.viejo) x.id = p.nuevo; });
+    p.eq.id = p.nuevo;
+  });
+  await persistEquipment(); await persistSheets(); await persistReceptions();
+  toast(plan.length+' folio'+(plan.length===1?'':'s')+' reasignado'+(plan.length===1?'':'s'));
+  navReplace('clientDetail',{id:clientId});
+}
 async function saveClient(id){
   const name = document.getElementById('f_name').value.trim();
   if(!name){ toast('El nombre del cliente es obligatorio'); return; }
-  const data = { name, phone:document.getElementById('f_phone').value.trim(), email:document.getElementById('f_email').value.trim(), address:document.getElementById('f_address').value.trim(), notes:document.getElementById('f_notes').value.trim() };
+  let clave = (document.getElementById('f_clave').value||'').trim().toUpperCase().replace(/[^A-Z]/g,'');
+  if(!clave) clave = suggestClave(name, new Set(S.clients.filter(c=>c.id!==id).map(c=>c.clave).filter(Boolean)));
+  const claveErr = validateClave(clave, id);
+  if(claveErr){ toast(claveErr); return; }
+  const prevClave = id ? getClient(id).clave : null;
+  const data = { name, clave, phone:document.getElementById('f_phone').value.trim(), email:document.getElementById('f_email').value.trim(), address:document.getElementById('f_address').value.trim(), notes:document.getElementById('f_notes').value.trim() };
   if(id){ Object.assign(getClient(id), data); }
   else { const nc = {id:'CL-'+uid(), createdAt:todayISO(), ...data}; S.clients.push(nc); id = nc.id; }
   await persistClients();
-  toast('Cliente guardado');
+  toast(prevClave && prevClave!==clave && equipmentByClient(id).length ? 'Cliente guardado. Sus equipos actuales conservan su folio.' : 'Cliente guardado');
   navReplace('clientDetail',{id});
 }
 async function deleteClient(id){
@@ -2408,6 +2501,7 @@ async function importBackupFile(input){
     S.quotes = Array.isArray(data.quotes) ? data.quotes : [];
     if(Array.isArray(data.categories) && data.categories.length) S.categories = data.categories;
     S.settings = data.settings || S.settings;
+    await ensureClientClaves();
     await persistClients(); await persistEquipment(); await persistSheets(); await persistReceptions(); await persistQuotes(); await persistCategories(); await persistSettings();
     toast('Respaldo restaurado');
     goHome();
